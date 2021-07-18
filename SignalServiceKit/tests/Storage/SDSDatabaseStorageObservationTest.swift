@@ -1,5 +1,5 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 import Foundation
@@ -10,14 +10,14 @@ class MockObserver {
     var updateCount: UInt = 0
     var externalUpdateCount: UInt = 0
     var resetCount: UInt = 0
-    var lastChange: UIDatabaseChanges?
+    var lastChange: DatabaseChanges?
 
     private var expectation: XCTestExpectation?
 
     init() {
         AssertIsOnMainThread()
 
-        SDSDatabaseStorage.shared.appendUIDatabaseSnapshotDelegate(self)
+        SDSDatabaseStorage.shared.appendDatabaseChangeDelegate(self)
     }
 
     func set(expectation: XCTestExpectation) {
@@ -36,13 +36,13 @@ class MockObserver {
 
 // MARK: -
 
-extension MockObserver: UIDatabaseSnapshotDelegate {
+extension MockObserver: DatabaseChangeDelegate {
 
-    func uiDatabaseSnapshotWillUpdate() {
+    func databaseChangesWillUpdate() {
         AssertIsOnMainThread()
     }
 
-    func uiDatabaseSnapshotDidUpdate(databaseChanges: UIDatabaseChanges) {
+    func databaseChangesDidUpdate(databaseChanges: DatabaseChanges) {
         AssertIsOnMainThread()
 
         updateCount += 1
@@ -52,7 +52,7 @@ extension MockObserver: UIDatabaseSnapshotDelegate {
         expectation = nil
     }
 
-    func uiDatabaseSnapshotDidUpdateExternally() {
+    func databaseChangesDidUpdateExternally() {
         AssertIsOnMainThread()
 
         Logger.verbose("")
@@ -63,7 +63,7 @@ extension MockObserver: UIDatabaseSnapshotDelegate {
         expectation = nil
     }
 
-    func uiDatabaseSnapshotDidReset() {
+    func databaseChangesDidReset() {
         AssertIsOnMainThread()
 
         Logger.verbose("")
@@ -79,17 +79,11 @@ extension MockObserver: UIDatabaseSnapshotDelegate {
 
 class SDSDatabaseStorageObservationTest: SSKBaseTestSwift {
 
-    // MARK: - Dependencies
-
-    var storageCoordinator: StorageCoordinator {
-        return SSKEnvironment.shared.storageCoordinator
-    }
-
     // MARK: - GRDB
 
     func testGRDBSyncWrite() {
 
-        try! databaseStorage.grdbStorage.setupUIDatabase()
+        try! databaseStorage.grdbStorage.setupDatabaseChangeObserver()
 
         // Make sure there's already at least one thread.
         var someThread: TSThread?
@@ -141,12 +135,7 @@ class SDSDatabaseStorageObservationTest: SSKBaseTestSwift {
             XCTAssertTrue(lastChange.didUpdate(keyValueStore: keyValueStore))
             // Note: For GRDB, didUpdate(keyValueStore:) currently returns true
             //       if any key value stores was updated.
-            if self.storageCoordinator.state == .YDB ||
-                self.storageCoordinator.state == .ydbTests {
-                XCTAssertFalse(lastChange.didUpdate(keyValueStore: otherKeyValueStore))
-            } else {
-                XCTAssertTrue(lastChange.didUpdate(keyValueStore: otherKeyValueStore))
-            }
+            XCTAssertTrue(lastChange.didUpdate(keyValueStore: otherKeyValueStore))
         }
         mockObserver.clear()
 
@@ -271,7 +260,7 @@ class SDSDatabaseStorageObservationTest: SSKBaseTestSwift {
 
     func testGRDBAsyncWrite() {
 
-        try! databaseStorage.grdbStorage.setupUIDatabase()
+        try! databaseStorage.grdbStorage.setupDatabaseChangeObserver()
 
         // Make sure there's already at least one thread.
         var someThread: TSThread?
@@ -323,12 +312,7 @@ class SDSDatabaseStorageObservationTest: SSKBaseTestSwift {
             XCTAssertTrue(lastChange.didUpdate(keyValueStore: keyValueStore))
             // Note: For GRDB, didUpdate(keyValueStore:) currently returns true
             //       if any key value stores was updated.
-            if self.storageCoordinator.state == .YDB ||
-                self.storageCoordinator.state == .ydbTests {
-                XCTAssertFalse(lastChange.didUpdate(keyValueStore: otherKeyValueStore))
-            } else {
-                XCTAssertTrue(lastChange.didUpdate(keyValueStore: otherKeyValueStore))
-            }
+            XCTAssertTrue(lastChange.didUpdate(keyValueStore: otherKeyValueStore))
         }
         mockObserver.clear()
 

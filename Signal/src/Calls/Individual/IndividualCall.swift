@@ -1,5 +1,5 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 import Foundation
@@ -32,12 +32,13 @@ public enum CallDirection {
     case outgoing, incoming
 }
 
-public protocol IndividualCallDelegate: class {
+public protocol IndividualCallDelegate: AnyObject {
     func individualCallStateDidChange(_ call: IndividualCall, state: CallState)
     func individualCallLocalVideoMuteDidChange(_ call: IndividualCall, isVideoMuted: Bool)
     func individualCallLocalAudioMuteDidChange(_ call: IndividualCall, isAudioMuted: Bool)
     func individualCallHoldDidChange(_ call: IndividualCall, isOnHold: Bool)
     func individualCallRemoteVideoMuteDidChange(_ call: IndividualCall, isVideoMuted: Bool)
+    func individualCallRemoteSharingScreenDidChange(_ call: IndividualCall, isRemoteSharingScreen: Bool)
 }
 
 /**
@@ -86,6 +87,15 @@ public class IndividualCall: NSObject, IndividualCallNotificationInfo {
         }
     }
 
+    var isRemoteSharingScreen = false {
+        didSet {
+            AssertIsOnMainThread()
+
+            Logger.info("\(isRemoteSharingScreen)")
+            delegate?.individualCallRemoteSharingScreenDidChange(self, isRemoteSharingScreen: isRemoteSharingScreen)
+        }
+    }
+
     // MARK: -
 
     // tracking cleanup
@@ -123,7 +133,7 @@ public class IndividualCall: NSObject, IndividualCallNotificationInfo {
         }
     }
 
-    public var hasLocalVideo = false {
+    public lazy var hasLocalVideo = offerMediaType == .video {
         didSet {
             AssertIsOnMainThread()
 

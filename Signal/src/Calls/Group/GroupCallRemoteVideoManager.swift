@@ -1,13 +1,13 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 import Foundation
 import SignalRingRTC
 
-class GroupCallRemoteVideoManager {
+class GroupCallRemoteVideoManager: Dependencies {
     private var currentGroupCall: GroupCall? {
-        guard let call = AppEnvironment.shared.callService.currentCall, call.isGroupCall else { return nil }
+        guard let call = Self.callService.currentCall, call.isGroupCall else { return nil }
         return call.groupCall
     }
 
@@ -24,6 +24,8 @@ class GroupCallRemoteVideoManager {
         let videoView = GroupCallRemoteVideoView(demuxId: device.demuxId)
         videoView.sizeDelegate = self
         videoView.isGroupCall = true
+
+        if mode == .speaker { videoView.isFullScreen = true }
 
         currentVideoViewsDevice[mode] = videoView
         videoViews[device.demuxId] = currentVideoViewsDevice
@@ -107,7 +109,7 @@ extension GroupCallRemoteVideoManager: CallObserver {
     }
 }
 
-private protocol GroupCallRemoteVideoViewSizeDelegate: class {
+private protocol GroupCallRemoteVideoViewSizeDelegate: AnyObject {
     func groupCallRemoteVideoViewDidChangeSize(remoteVideoView: GroupCallRemoteVideoView)
     func groupCallRemoteVideoViewDidChangeSuperview(remoteVideoView: GroupCallRemoteVideoView)
 }
@@ -150,6 +152,16 @@ class GroupCallRemoteVideoView: UIView {
     var isGroupCall: Bool {
         get { remoteVideoView.isGroupCall }
         set { remoteVideoView.isGroupCall = newValue }
+    }
+
+    var isFullScreen: Bool {
+        get { remoteVideoView.isFullScreen }
+        set { remoteVideoView.isFullScreen = newValue }
+    }
+
+    var isScreenShare: Bool {
+        get { remoteVideoView.isScreenShare }
+        set { remoteVideoView.isScreenShare = newValue }
     }
 
     var isRenderingVideo: Bool { videoTrack != nil }

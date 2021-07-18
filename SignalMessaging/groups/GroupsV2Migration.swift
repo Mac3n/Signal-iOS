@@ -1,38 +1,14 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 import Foundation
 import PromiseKit
 import ZKGroup
-import HKDFKit
+import SignalClient
 
 @objc
 public class GroupsV2Migration: NSObject {
-
-    // MARK: - Dependencies
-
-    private static var tsAccountManager: TSAccountManager {
-        return TSAccountManager.shared()
-    }
-
-    private static var databaseStorage: SDSDatabaseStorage {
-        return SDSDatabaseStorage.shared
-    }
-
-    private static var profileManager: OWSProfileManager {
-        return OWSProfileManager.shared()
-    }
-
-    private static var groupsV2: GroupsV2Impl {
-        return SSKEnvironment.shared.groupsV2 as! GroupsV2Impl
-    }
-
-    private static var bulkProfileFetch: BulkProfileFetch {
-        return SSKEnvironment.shared.bulkProfileFetch
-    }
-
-    // MARK: -
 
     private override init() {}
 
@@ -53,11 +29,19 @@ public extension GroupsV2Migration {
 
     // MARK: -
 
+    private static let groupMigrationTimeoutDuration: TimeInterval = 30
+
     static func tryManualMigration(groupThread: TSGroupThread) -> Promise<TSGroupThread> {
+        Logger.info("request groupId: \(groupThread.groupId.hexadecimalString)")
         guard GroupManager.canManuallyMigrate else {
             return Promise(error: OWSAssertionError("Manual migration not enabled."))
         }
-        return tryToMigrate(groupThread: groupThread, migrationMode: manualMigrationMode)
+        return firstly {
+            self.tryToMigrate(groupThread: groupThread, migrationMode: manualMigrationMode)
+        }.timeout(seconds: Self.groupMigrationTimeoutDuration,
+                  description: "Manual migration") {
+            GroupsV2Error.timeout
+        }
     }
 
     // If there is a v1 group in the database that can be
@@ -163,6 +147,9 @@ public extension GroupsV2Migration {
     static func tryToAutoMigrateAllGroups(shouldLimitBatchSize: Bool) {
         AssertIsOnMainThread()
 
+        guard !DebugFlags.reduceLogChatter else {
+            return
+        }
         guard FeatureFlags.groupsV2Migrations else {
             return
         }
@@ -225,8 +212,13 @@ public extension GroupsV2Migration {
                 }
                 return ContactDiscoveryTask(phoneNumbers: phoneNumbersWithoutUuids).perform().asVoid()
             }.recover(on: .global()) { (error: Error) -> Promise<Void> in
-                // Log but otherwise ignore errors in CDS lookup.
-                owsFailDebug("Error: \(error)")
+                if let httpStatusCode = error.httpStatusCode,
+                   httpStatusCode == 401 {
+                    // Not registered.
+                    Logger.warn("Error: \(error)")
+                } else {
+                    owsFailDebugUnlessNetworkFailure(error)
+                }
                 return Promise.value(())
             }.map(on: .global()) { _ in
                 Logger.verbose("")
@@ -257,7 +249,7 @@ public extension GroupsV2Migration {
                     }
                 }
             }.catch(on: .global()) { error in
-                owsFailDebug("Error: \(error)")
+                owsFailDebugUnlessNetworkFailure(error)
             }
         }
     }
@@ -300,6 +292,7 @@ public extension GroupsV2Migration {
 // MARK: -
 
 fileprivate extension GroupsV2Migration {
+    public static var verboseLogging: Bool { DebugFlags.internalLogging }
 
     private static let migrationQueue: OperationQueue = {
         let operationQueue = OperationQueue()
@@ -311,6 +304,9 @@ fileprivate extension GroupsV2Migration {
     // Ensure only one migration is in flight at a time.
     static func enqueueMigration(groupId: Data,
                                  migrationMode: GroupsV2MigrationMode) -> Promise<TSGroupThread> {
+        if GroupsV2Migration.verboseLogging {
+            Logger.info("enqueue groupId: \(groupId.hexadecimalString), migrationMode: \(migrationMode)")
+        }
         let operation = MigrateGroupOperation(groupId: groupId, migrationMode: migrationMode)
         migrationQueue.addOperation(operation)
         return operation.promise
@@ -330,12 +326,21 @@ fileprivate extension GroupsV2Migration {
         }
 
         return firstly(on: .global()) { () -> Promise<Void> in
-            GroupManager.ensureLocalProfileHasCommitmentIfNecessary()
+            if Self.verboseLogging {
+                Logger.info("Step 1: groupId: \(groupId.hexadecimalString), mode: \(migrationMode)")
+            }
+            return GroupManager.ensureLocalProfileHasCommitmentIfNecessary()
         }.map(on: .global()) { () -> UnmigratedState in
-            try Self.loadUnmigratedState(groupId: groupId)
+            if Self.verboseLogging {
+                Logger.info("Step 2: groupId: \(groupId.hexadecimalString), mode: \(migrationMode)")
+            }
+            return try Self.loadUnmigratedState(groupId: groupId)
         }.then(on: .global()) { (unmigratedState: UnmigratedState) -> Promise<UnmigratedState> in
-            let groupName = unmigratedState.groupThread.groupModel.groupName ?? "Unnamed group"
-            Logger.verbose("Trying to migrate: \(groupName), mode: \(migrationMode)")
+            if Self.verboseLogging {
+                Logger.info("Step 3: groupId: \(groupId.hexadecimalString), mode: \(migrationMode)")
+                let groupName = unmigratedState.groupThread.groupModel.groupName ?? "Unnamed group"
+                Logger.verbose("Migrating: \(groupName)")
+            }
 
             return firstly {
                 Self.tryToPrepareMembersForMigration(migrationMode: migrationMode,
@@ -344,6 +349,10 @@ fileprivate extension GroupsV2Migration {
                 unmigratedState
             }
         }.then(on: .global()) { (unmigratedState: UnmigratedState) -> Promise<TSGroupThread> in
+            if Self.verboseLogging {
+                Logger.info("Step 4: groupId: \(groupId.hexadecimalString), mode: \(migrationMode)")
+            }
+
             addMigratingGroupId(unmigratedState.migrationMetadata.v1GroupId)
             addMigratingGroupId(unmigratedState.migrationMetadata.v2GroupId)
 
@@ -353,6 +362,9 @@ fileprivate extension GroupsV2Migration {
             }.recover(on: .global()) { (error: Error) -> Promise<TSGroupThread> in
                 if case GroupsV2Error.groupDoesNotExistOnService = error,
                     migrationMode.canMigrateToService {
+                    if Self.verboseLogging {
+                        Logger.info("Step 4: groupId: \(groupId.hexadecimalString), mode: \(migrationMode)")
+                    }
                     // If the group is not already on the service, try to
                     // migrate by creating on the service.
                     return attemptToMigrateByCreatingOnService(unmigratedState: unmigratedState,
@@ -398,12 +410,7 @@ fileprivate extension GroupsV2Migration {
             return firstly {
                 discoveryTask.perform().asVoid()
             }.recover(on: .global()) { error -> Promise<Void> in
-                // Log but ignore errors.
-                if IsNetworkConnectivityFailure(error) {
-                    Logger.warn("Error: \(error)")
-                } else {
-                    owsFailDebug("Error: \(error)")
-                }
+                owsFailDebugUnlessNetworkFailure(error)
                 return Promise.value(())
             }
         }.then(on: .global()) { () -> Promise<Void> in
@@ -437,21 +444,21 @@ fileprivate extension GroupsV2Migration {
         case parallel
     }
 
-    private static func fetchProfiles(addresses: [SignalServiceAddress], profileFetchMode: ProfileFetchMode) -> Promise<Void> {
+    private static func fetchProfiles(addresses: [SignalServiceAddress],
+                                      profileFetchMode: ProfileFetchMode) -> Promise<Void> {
         func fetchProfilePromise(address: SignalServiceAddress) -> Promise<Void> {
             firstly {
                 ProfileFetcherJob.fetchProfilePromise(address: address, ignoreThrottling: false).asVoid()
             }.recover(on: .global()) { error -> Promise<Void> in
                 if case ProfileFetchError.throttled = error {
-                    // Do not ignore throttling errors.
-                    throw error
+                    // Ignore throttling errors.
+                    return Promise.value(())
                 }
-                // Log but ignore errors.
-                if IsNetworkConnectivityFailure(error) {
-                    Logger.warn("Error: \(error)")
-                } else {
-                    owsFailDebug("Error: \(error)")
+                if case ProfileFetchError.missing = error {
+                    // If a user has no profile, ignore.
+                    return Promise.value(())
                 }
+                owsFailDebugUnlessNetworkFailure(error)
                 return Promise.value(())
             }
         }
@@ -486,7 +493,7 @@ fileprivate extension GroupsV2Migration {
 
         return firstly(on: .global()) { () -> Promise<GroupV2Snapshot> in
             let groupSecretParamsData = unmigratedState.migrationMetadata.v2GroupSecretParams
-            return self.groupsV2.fetchCurrentGroupV2Snapshot(groupSecretParamsData: groupSecretParamsData)
+            return self.groupsV2Impl.fetchCurrentGroupV2Snapshot(groupSecretParamsData: groupSecretParamsData)
         }.recover(on: .global()) { (error: Error) -> Promise<GroupV2Snapshot> in
             if case GroupsV2Error.groupDoesNotExistOnService = error {
                 // Convert error if the group is not already on the service.
@@ -567,7 +574,8 @@ fileprivate extension GroupsV2Migration {
             return firstly(on: .global()) { () -> Promise<Void> in
                 GroupManager.tryToEnableGroupsV2(for: Array(membersToMigrate), isBlocking: true, ignoreErrors: true)
             }.then(on: .global()) { () throws -> Promise<Void> in
-                self.groupsV2.tryToEnsureProfileKeyCredentials(for: Array(membersToMigrate))
+                self.groupsV2Impl.tryToEnsureProfileKeyCredentials(for: Array(membersToMigrate),
+                                                                   ignoreMissingProfiles: true)
             }.then(on: .global()) { () throws -> Promise<String?> in
                 guard let avatarData = unmigratedState.groupThread.groupModel.groupAvatarData else {
                     // No avatar to upload.
@@ -575,8 +583,8 @@ fileprivate extension GroupsV2Migration {
                 }
                 // Upload avatar.
                 return firstly(on: .global()) { () -> Promise<String> in
-                    return self.groupsV2.uploadGroupAvatar(avatarData: avatarData,
-                                                           groupSecretParamsData: unmigratedState.migrationMetadata.v2GroupSecretParams)
+                    return self.groupsV2Impl.uploadGroupAvatar(avatarData: avatarData,
+                                                               groupSecretParamsData: unmigratedState.migrationMetadata.v2GroupSecretParams)
                 }.map(on: .global()) { (avatarUrlPath: String) -> String? in
                     return avatarUrlPath
                 }
@@ -711,10 +719,10 @@ fileprivate extension GroupsV2Migration {
     static func migrateGroupOnService(proposedGroupModel: TSGroupModelV2,
                                       disappearingMessageToken: DisappearingMessageToken) -> Promise<TSGroupModelV2> {
         return firstly {
-            self.groupsV2.createNewGroupOnService(groupModel: proposedGroupModel,
+            self.groupsV2Impl.createNewGroupOnService(groupModel: proposedGroupModel,
                                                   disappearingMessageToken: disappearingMessageToken)
         }.then(on: .global()) { _ in
-            self.groupsV2.fetchCurrentGroupV2Snapshot(groupModel: proposedGroupModel)
+            self.groupsV2Impl.fetchCurrentGroupV2Snapshot(groupModel: proposedGroupModel)
         }.map(on: .global()) { (groupV2Snapshot: GroupV2Snapshot) throws -> TSGroupModelV2 in
             let createdGroupModel = try self.databaseStorage.write { (transaction) throws -> TSGroupModelV2 in
                 let builder = try TSGroupModelBuilder.builderForSnapshot(groupV2Snapshot: groupV2Snapshot,
@@ -921,7 +929,7 @@ public class GroupsV2MigrationInfo: NSObject {
 
 // MARK: -
 
-public enum GroupsV2MigrationMode: Equatable {
+public enum GroupsV2MigrationMode: String {
     // Manual migration; only available if all users can be
     // added (but not invited).
     case manualMigrationPolite
@@ -1056,17 +1064,11 @@ fileprivate extension GroupsV2Migration {
         guard GroupManager.isValidGroupId(v1GroupId, groupsVersion: .V1) else {
             throw OWSAssertionError("Invalid v1 group id.")
         }
-        guard let migrationInfo: Data = "GV2 Migration".data(using: .utf8) else {
-            throw OWSAssertionError("Couldn't convert info data.")
-        }
-        let salt = Data(repeating: 0, count: 32)
-        let masterKeyLength: Int32 = Int32(GroupMasterKey.SIZE)
-        let masterKey =
-            try HKDFKit.deriveKey(v1GroupId, info: migrationInfo, salt: salt, outputSize: masterKeyLength)
-        guard masterKey.count == masterKeyLength else {
-            throw OWSAssertionError("Invalid master key.")
-        }
-        return masterKey
+        let migrationInfo = "GV2 Migration"
+        let masterKey = try migrationInfo.utf8.withContiguousStorageIfAvailable {
+            try hkdf(outputLength: GroupMasterKey.SIZE, version: 3, inputKeyMaterial: v1GroupId, salt: [], info: $0)
+        }!
+        return Data(masterKey)
     }
 
     // MARK: -
@@ -1083,7 +1085,7 @@ fileprivate extension GroupsV2Migration {
             throw OWSAssertionError("Invalid group id: \(v1GroupId.hexadecimalString).")
         }
         let masterKey = try gv2MasterKey(forV1GroupId: v1GroupId)
-        let v2GroupSecretParams = try groupsV2.groupSecretParamsData(forMasterKeyData: masterKey)
+        let v2GroupSecretParams = try groupsV2Impl.groupSecretParamsData(forMasterKeyData: masterKey)
         let v2GroupId = try groupsV2.groupId(forGroupSecretParamsData: v2GroupSecretParams)
         return MigrationMetadata(v1GroupId: v1GroupId,
                                  v2GroupId: v2GroupId,
@@ -1115,7 +1117,7 @@ fileprivate extension GroupsV2Migration {
             }
             guard groupThread.groupModel.groupsVersion == .V1 else {
                 // This can happen due to races, but should be very rare.
-                throw OWSAssertionError("Unexpected groupsVersion.")
+                throw OWSGenericError("Unexpected groupsVersion.")
             }
             let disappearingMessagesConfiguration = groupThread.disappearingMessagesConfiguration(with: transaction)
             let migrationMetadata = try Self.calculateMigrationMetadata(for: groupThread.groupModel)
@@ -1152,13 +1154,25 @@ private class MigrateGroupOperation: OWSOperation {
     }
 
     public override func run() {
+        let groupId = self.groupId
+        let migrationMode = self.migrationMode
+        if GroupsV2Migration.verboseLogging {
+            Logger.info("start groupId: \(groupId.hexadecimalString), migrationMode: \(migrationMode)")
+        }
+
         firstly(on: .global()) {
-            GroupsV2Migration.attemptMigration(groupId: self.groupId,
-                                               migrationMode: self.migrationMode)
+            GroupsV2Migration.attemptMigration(groupId: groupId,
+                                               migrationMode: migrationMode)
         }.done(on: .global()) { groupThread in
+            if GroupsV2Migration.verboseLogging {
+                Logger.info("success groupId: \(groupId.hexadecimalString), migrationMode: \(migrationMode)")
+            }
             self.reportSuccess()
             self.resolver.fulfill(groupThread)
         }.catch(on: .global()) { error in
+            if GroupsV2Migration.verboseLogging {
+                Logger.info("failure groupId: \(groupId.hexadecimalString), migrationMode: \(migrationMode), error: \(error)")
+            }
             self.reportError(error.asUnretryableError)
             self.resolver.reject(error)
         }

@@ -1,5 +1,5 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 import Foundation
@@ -100,7 +100,16 @@ public class GroupsV2Protos {
         groupBuilder.setRevision(initialRevision)
         groupBuilder.setPublicKey(groupV2Params.groupPublicParamsData)
         // GroupsV2 TODO: Will production implementation of encryptString() pad?
-        groupBuilder.setTitle(try groupV2Params.encryptGroupName(groupModel.groupName?.stripped ?? " "))
+
+        let groupTitle = groupModel.groupName?.ows_stripped() ?? " "
+        let groupTitleEncrypted = try groupV2Params.encryptGroupName(groupTitle)
+        guard groupTitle.glyphCount <= GroupManager.maxGroupNameGlyphCount else {
+            throw OWSAssertionError("groupTitle is too long.")
+        }
+        guard groupTitleEncrypted.count <= GroupManager.maxGroupNameEncryptedByteCount else {
+            throw OWSAssertionError("Encrypted groupTitle is too long.")
+        }
+        groupBuilder.setTitle(groupTitleEncrypted)
 
         let hasAvatarUrl = groupModel.avatarUrlPath != nil
         let hasAvatarData = groupModel.groupAvatarData != nil
@@ -197,7 +206,7 @@ public class GroupsV2Protos {
     public class func buildGroupContextV2Proto(groupModel: TSGroupModelV2,
                                                changeActionsProtoData: Data?) throws -> SSKProtoGroupContextV2 {
 
-        var builder = SSKProtoGroupContextV2.builder()
+        let builder = SSKProtoGroupContextV2.builder()
         builder.setMasterKey(try masterKeyData(forGroupModel: groupModel))
         builder.setRevision(groupModel.revision)
 
@@ -254,6 +263,7 @@ public class GroupsV2Protos {
                             groupV2Params: GroupV2Params) throws -> GroupV2Snapshot {
 
         let title = groupV2Params.decryptGroupName(groupProto.title) ?? ""
+        let descriptionText = groupV2Params.decryptGroupDescription(groupProto.descriptionBytes)
 
         var avatarUrlPath: String?
         var avatarData: Data?
@@ -411,6 +421,7 @@ public class GroupsV2Protos {
                                    groupProto: groupProto,
                                    revision: revision,
                                    title: title,
+                                   descriptionText: descriptionText,
                                    avatarUrlPath: avatarUrlPath,
                                    avatarData: avatarData,
                                    groupMembership: groupMembership,
@@ -432,6 +443,8 @@ public class GroupsV2Protos {
         guard let title = groupV2Params.decryptGroupName(titleData) else {
             throw OWSAssertionError("Missing or invalid title.")
         }
+
+        let descriptionText: String? = groupV2Params.decryptGroupDescription(joinInfoProto.descriptionBytes)
 
         let avatarUrlPath: String? = joinInfoProto.avatar
         guard joinInfoProto.hasMemberCount,
@@ -455,6 +468,7 @@ public class GroupsV2Protos {
         let isLocalUserRequestingMember = joinInfoProto.hasPendingAdminApproval && joinInfoProto.pendingAdminApproval
 
         return GroupInviteLinkPreview(title: title,
+                                      descriptionText: descriptionText,
                                       avatarUrlPath: avatarUrlPath,
                                       memberCount: memberCount,
                                       addFromInviteLinkAccess: addFromInviteLinkAccess,
@@ -522,7 +536,8 @@ public class GroupsV2Protos {
             avatarUrlPaths += collectAvatarUrlPaths(groupProto: groupState)
 
             guard let changeProto = changeStateProto.groupChange else {
-                throw OWSAssertionError("Missing groupChange proto.")
+                owsFailDebug("Missing groupChange proto.")
+                throw GroupsV2Error.missingGroupChangeProtos
             }
             // We can ignoreSignature because these protos came from the service.
             let changeActionsProto = try parseAndVerifyChangeActionsProto(changeProto, ignoreSignature: ignoreSignature)

@@ -1,5 +1,5 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 import Foundation
@@ -7,12 +7,10 @@ import Foundation
 public struct ContactDetails {
     public let address: SignalServiceAddress
     public let name: String?
-    public let conversationColorName: String?
     public let verifiedProto: SSKProtoVerified?
     public let profileKey: Data?
     public let isBlocked: Bool
     public let expireTimer: UInt32
-    public let avatarData: Data?
     public let isArchived: Bool?
     public let inboxSortOrder: UInt32?
 }
@@ -32,18 +30,20 @@ public class ContactsInputStream {
         var contactDataLength: UInt32 = 0
         try inputStream.decodeSingularUInt32Field(value: &contactDataLength)
 
+        guard contactDataLength > 0 else {
+            owsFailDebug("Empty contactDataLength.")
+            return nil
+        }
+
         var contactData: Data = Data()
         try inputStream.decodeData(value: &contactData, count: Int(contactDataLength))
 
         let contactDetails = try SSKProtoContactDetails(serializedData: contactData)
 
-        var avatarData: Data?
         if let avatar = contactDetails.avatar {
+            // Consume but discard the incoming contact avatar.
             var decodedData = Data()
             try inputStream.decodeData(value: &decodedData, count: Int(avatar.length))
-            if decodedData.count > 0 {
-                avatarData = decodedData
-            }
         }
 
         guard let address = contactDetails.contactAddress, address.isValid else {
@@ -52,12 +52,10 @@ public class ContactsInputStream {
 
         return ContactDetails(address: address,
                               name: contactDetails.name,
-                              conversationColorName: contactDetails.color,
                               verifiedProto: contactDetails.verified,
                               profileKey: contactDetails.profileKey,
                               isBlocked: contactDetails.blocked,
                               expireTimer: contactDetails.expireTimer,
-                              avatarData: avatarData,
                               isArchived: contactDetails.hasArchived ? contactDetails.archived : nil,
                               inboxSortOrder: contactDetails.hasInboxPosition ? contactDetails.inboxPosition : nil)
     }

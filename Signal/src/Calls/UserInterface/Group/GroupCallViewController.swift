@@ -1,5 +1,5 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 import Foundation
@@ -21,8 +21,9 @@ class GroupCallViewController: UIViewController {
     private let localMemberView = GroupCallLocalMemberView()
     private let speakerView = GroupCallRemoteMemberView(mode: .speaker)
 
-    private var shouldShowToastView = false
-    private let toastView = GroupCallSpeakerToastView()
+    private var didUserEverSwipeToSpeakerView = true
+    private var didUserEverSwipeToScreenShare = true
+    private let swipeToastView = GroupCallSwipeToastView()
 
     private var speakerPage = UIView()
 
@@ -30,6 +31,19 @@ class GroupCallViewController: UIViewController {
 
     private var isCallMinimized = false {
         didSet { speakerView.isCallMinimized = isCallMinimized }
+    }
+
+    private var isAutoScrollingToScreenShare = false
+    private var isAnyRemoteDeviceScreenSharing = false {
+        didSet {
+            guard oldValue != isAnyRemoteDeviceScreenSharing else { return }
+
+            // Scroll to speaker view when presenting begins.
+            if isAnyRemoteDeviceScreenSharing {
+                isAutoScrollingToScreenShare = true
+                scrollView.setContentOffset(CGPoint(x: 0, y: speakerPage.frame.origin.y), animated: true)
+            }
+        }
     }
 
     lazy var tapGesture = UITapGestureRecognizer(target: self, action: #selector(didTouchRootView))
@@ -42,6 +56,8 @@ class GroupCallViewController: UIViewController {
     var hasUnresolvedSafetyNumberMismatch = false
 
     private static let keyValueStore = SDSKeyValueStore(collection: "GroupCallViewController")
+    private static let didUserSwipeToSpeakerViewKey = "didUserSwipeToSpeakerView"
+    private static let didUserSwipeToScreenShareKey = "didUserSwipeToScreenShare"
 
     init(call: SignalCall) {
         // TODO: Eventually unify UI for group and individual calls
@@ -60,13 +76,18 @@ class GroupCallViewController: UIViewController {
         localMemberView.delegate = self
 
         SDSDatabaseStorage.shared.asyncRead { readTx in
-            let didUserSwipeToSpeakerView = Self.keyValueStore.getBool(
-                "didUserSwipeToSpeakerView",
+            self.didUserEverSwipeToSpeakerView = Self.keyValueStore.getBool(
+                Self.didUserSwipeToSpeakerViewKey,
                 defaultValue: false,
-                transaction: readTx)
-            self.shouldShowToastView = !didUserSwipeToSpeakerView
+                transaction: readTx
+            )
+            self.didUserEverSwipeToScreenShare = Self.keyValueStore.getBool(
+                Self.didUserSwipeToScreenShareKey,
+                defaultValue: false,
+                transaction: readTx
+            )
         } completion: {
-            self.updateSpeakerViewToast()
+            self.updateSwipeToastView()
         }
     }
 
@@ -100,7 +121,7 @@ class GroupCallViewController: UIViewController {
                     return
                 }
 
-                guard let groupCall = AppEnvironment.shared.callService.buildAndConnectGroupCallIfPossible(
+                guard let groupCall = Self.callService.buildAndConnectGroupCallIfPossible(
                         thread: thread
                 ) else {
                     return owsFailDebug("Failed to build group call")
@@ -157,11 +178,11 @@ class GroupCallViewController: UIViewController {
         scrollView.addSubview(videoGrid)
         scrollView.addSubview(speakerPage)
 
-        scrollView.addSubview(toastView)
-        toastView.autoPinEdge(.bottom, to: .bottom, of: videoGrid, withOffset: -22)
-        toastView.autoHCenterInSuperview()
-        toastView.autoPinEdge(toSuperviewMargin: .leading, relation: .greaterThanOrEqual)
-        toastView.autoPinEdge(toSuperviewMargin: .trailing, relation: .greaterThanOrEqual)
+        scrollView.addSubview(swipeToastView)
+        swipeToastView.autoPinEdge(.bottom, to: .bottom, of: videoGrid, withOffset: -22)
+        swipeToastView.autoHCenterInSuperview()
+        swipeToastView.autoPinEdge(toSuperviewMargin: .leading, relation: .greaterThanOrEqual)
+        swipeToastView.autoPinEdge(toSuperviewMargin: .trailing, relation: .greaterThanOrEqual)
 
         view.addGestureRecognizer(tapGesture)
 
@@ -207,6 +228,8 @@ class GroupCallViewController: UIViewController {
     }
 
     override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+
         if hasUnresolvedSafetyNumberMismatch {
             resolveSafetyNumberMismatch()
         }
@@ -317,27 +340,56 @@ class GroupCallViewController: UIViewController {
         }
     }
 
-    func updateSpeakerViewToast() {
+    func updateSwipeToastView() {
         let isSpeakerViewAvailable = groupCall.remoteDeviceStates.count >= 2 && groupCall.localDeviceState.joinState == .joined
-        guard isSpeakerViewAvailable, shouldShowToastView else {
-            toastView.isHidden = true
+        guard isSpeakerViewAvailable else {
+            swipeToastView.isHidden = true
             return
         }
 
-        toastView.alpha = 1.0 - (scrollView.contentOffset.y / view.height)
+        if isAnyRemoteDeviceScreenSharing {
+            if didUserEverSwipeToScreenShare {
+                swipeToastView.isHidden = true
+                return
+            }
+        } else if didUserEverSwipeToSpeakerView {
+            swipeToastView.isHidden = true
+            return
+        }
+
+        swipeToastView.alpha = 1.0 - (scrollView.contentOffset.y / view.height)
+        swipeToastView.text = isAnyRemoteDeviceScreenSharing
+            ? NSLocalizedString(
+                "GROUP_CALL_SCREEN_SHARE_TOAST",
+                comment: "Toast view text informing user about swiping to screen share"
+            )
+            : NSLocalizedString(
+                "GROUP_CALL_SPEAKER_VIEW_TOAST",
+                comment: "Toast view text informing user about swiping to speaker view"
+            )
 
         if scrollView.contentOffset.y >= view.height {
-            toastView.isHidden = true
-            shouldShowToastView = false
-            SDSDatabaseStorage.shared.asyncWrite { writeTx in
-                Self.keyValueStore.setBool(true, key: "didUserSwipeToSpeakerView", transaction: writeTx)
+            swipeToastView.isHidden = true
+
+            if isAnyRemoteDeviceScreenSharing {
+                if !isAutoScrollingToScreenShare {
+                    didUserEverSwipeToScreenShare = true
+                    SDSDatabaseStorage.shared.asyncWrite { writeTx in
+                        Self.keyValueStore.setBool(true, key: Self.didUserSwipeToScreenShareKey, transaction: writeTx)
+                    }
+                }
+            } else {
+                didUserEverSwipeToSpeakerView = true
+                SDSDatabaseStorage.shared.asyncWrite { writeTx in
+                    Self.keyValueStore.setBool(true, key: Self.didUserSwipeToSpeakerViewKey, transaction: writeTx)
+                }
             }
 
-        } else if toastView.isHidden {
-            toastView.alpha = 0
-            toastView.isHidden = false
+        } else if swipeToastView.isHidden {
+            swipeToastView.alpha = 0
+            swipeToastView.isHidden = false
             UIView.animate(withDuration: 0.2, delay: 3.0, options: []) {
-                self.toastView.alpha = 1
+                self.swipeToastView.alpha = 1
             }
 
         }
@@ -391,7 +443,7 @@ class GroupCallViewController: UIViewController {
         }
 
         scheduleControlTimeoutIfNecessary()
-        updateSpeakerViewToast()
+        updateSwipeToastView()
     }
 
     func dismissCall() {
@@ -529,7 +581,7 @@ extension GroupCallViewController: CallViewControllerWindowReference {
                 }
             }
         } else {
-            AppEnvironment.shared.notificationPresenter.notifyForGroupCallSafetyNumberChange(inThread: call.thread)
+            Self.notificationPresenter.notifyForGroupCallSafetyNumberChange(inThread: call.thread)
         }
     }
 
@@ -540,7 +592,7 @@ extension GroupCallViewController: CallViewControllerWindowReference {
         // If we haven't joined the call yet, we want to alert for all members of the group
         // If we are in the call, we only care about safety numbers for the active call participants
         let addressesToAlert = call.thread.recipientAddresses.filter { memberAddress in
-            let isUntrusted = OWSIdentityManager.shared().untrustedIdentityForSending(to: memberAddress) != nil
+            let isUntrusted = Self.identityManager.untrustedIdentityForSending(to: memberAddress) != nil
             let isMemberInCall = currentParticipantAddresses.contains(memberAddress)
 
             // We want to alert for safety number changes of all members if we haven't joined yet
@@ -576,7 +628,7 @@ extension GroupCallViewController: CallViewControllerWindowReference {
 
             if didApprove {
                 SDSDatabaseStorage.shared.asyncWrite { writeTx in
-                    let identityManager = OWSIdentityManager.shared()
+                    let identityManager = Self.identityManager
                     for address in addressesToAlert {
                         guard let identityKey = identityManager.identityKey(for: address, transaction: writeTx) else { return }
                         let currentState = identityManager.verificationState(for: address, transaction: writeTx)
@@ -597,8 +649,6 @@ extension GroupCallViewController: CallViewControllerWindowReference {
             }
         }
         sheet.allowsDismissal = localDeviceHasNotJoined
-        sheet.confirmAction.button.titleLabel?.font = UIFont.ows_dynamicTypeBody.ows_semibold
-        sheet.cancelAction.button.titleLabel?.font = UIFont.ows_dynamicTypeBody
         present(sheet, animated: true, completion: nil)
     }
 }
@@ -614,6 +664,8 @@ extension GroupCallViewController: CallObserver {
     func groupCallRemoteDeviceStatesChanged(_ call: SignalCall) {
         AssertIsOnMainThread()
         owsAssertDebug(call.isGroupCall)
+
+        isAnyRemoteDeviceScreenSharing = call.groupCall.remoteDeviceStates.values.first { $0.sharingScreen == true } != nil
 
         updateCallUI()
     }
@@ -762,7 +814,12 @@ extension GroupCallViewController: UIScrollViewDelegate {
             videoOverflow.reloadData()
             updateCallUI()
         }
-        updateSpeakerViewToast()
+
+        if isAutoScrollingToScreenShare {
+            isAutoScrollingToScreenShare = scrollView.contentOffset.y != speakerView.frame.origin.y
+        }
+
+        updateSwipeToastView()
     }
 }
 

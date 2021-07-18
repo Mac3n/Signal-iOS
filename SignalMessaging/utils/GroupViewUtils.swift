@@ -1,5 +1,5 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 import Foundation
@@ -43,7 +43,7 @@ public class GroupViewUtils {
                                                                     completion(nil)
                                                                 }
                                                             default:
-                                                                owsFailDebug("Could not update group: \(error)")
+                                                                owsFailDebugUnlessNetworkFailure(error)
 
                                                                 modalActivityIndicator.dismiss {
                                                                     GroupViewUtils.showUpdateErrorUI(error: error)
@@ -80,8 +80,7 @@ public class GroupViewUtils {
                                                 style: .default) { _ in
                                                     self.showCantAddMemberView(fromViewController: fromViewController)
         })
-        actionSheet.addAction(ActionSheetAction(title: CommonStrings.okayButton,
-                                                style: .default))
+        actionSheet.addAction(OWSActionSheets.okayAction)
         fromViewController.presentActionSheet(actionSheet)
     }
 

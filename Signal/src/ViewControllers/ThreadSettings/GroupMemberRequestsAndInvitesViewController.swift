@@ -1,18 +1,18 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 import Foundation
 import PromiseKit
 
-protocol GroupMemberRequestsAndInvitesViewControllerDelegate: class {
+protocol GroupMemberRequestsAndInvitesViewControllerDelegate: AnyObject {
     func requestsAndInvitesViewDidUpdate()
 }
 
 // MARK: -
 
 @objc
-public class GroupMemberRequestsAndInvitesViewController: OWSTableViewController {
+public class GroupMemberRequestsAndInvitesViewController: OWSTableViewController2 {
 
     weak var groupMemberRequestsAndInvitesViewControllerDelegate: GroupMemberRequestsAndInvitesViewControllerDelegate?
 
@@ -25,17 +25,6 @@ public class GroupMemberRequestsAndInvitesViewController: OWSTableViewController
     private enum Mode: Int, CaseIterable {
         case memberRequests = 0
         case pendingInvites = 1
-
-        var title: String {
-            switch self {
-            case .memberRequests:
-                return NSLocalizedString("GROUP_REQUESTS_AND_INVITES_VIEW_MEMBER_REQUESTS_MODE",
-                                         comment: "Label for the 'member requests' mode of the 'group requests and invites' view.")
-            case .pendingInvites:
-                return NSLocalizedString("GROUP_REQUESTS_AND_INVITES_VIEW_PENDING_INVITES_MODE",
-                                         comment: "Label for the 'pending invites' mode of the 'group requests and invites' view.")
-            }
-        }
     }
 
     private let segmentedControl = UISegmentedControl()
@@ -62,9 +51,11 @@ public class GroupMemberRequestsAndInvitesViewController: OWSTableViewController
                                       comment: "The title for the 'group invites' view.")
         }
 
-        self.useThemeBackgroundColors = false
+        defaultSeparatorInsetLeading = Self.cellHInnerMargin + CGFloat(AvatarBuilder.smallAvatarSizePoints) + ContactCellView.avatarTextHSpacing
 
         configureSegmentedControl()
+
+        tableView.register(ContactTableViewCell.self, forCellReuseIdentifier: ContactTableViewCell.reuseIdentifier)
 
         updateTableContents()
     }
@@ -72,7 +63,24 @@ public class GroupMemberRequestsAndInvitesViewController: OWSTableViewController
     private func configureSegmentedControl() {
         for mode in Mode.allCases {
             assert(mode.rawValue == segmentedControl.numberOfSegments)
-            segmentedControl.insertSegment(withTitle: mode.title, at: mode.rawValue, animated: false)
+
+            var title: String
+            switch mode {
+            case .memberRequests:
+                title = NSLocalizedString("GROUP_REQUESTS_AND_INVITES_VIEW_MEMBER_REQUESTS_MODE",
+                                         comment: "Label for the 'member requests' mode of the 'group requests and invites' view.")
+                if groupModel.groupMembership.requestingMembers.count > 0 {
+                    title.append(" (\(OWSFormat.formatInt(groupModel.groupMembership.requestingMembers.count)))")
+                }
+            case .pendingInvites:
+                title = NSLocalizedString("GROUP_REQUESTS_AND_INVITES_VIEW_PENDING_INVITES_MODE",
+                                         comment: "Label for the 'pending invites' mode of the 'group requests and invites' view.")
+                if groupModel.groupMembership.invitedMembers.count > 0 {
+                    title.append(" (\(OWSFormat.formatInt(groupModel.groupMembership.invitedMembers.count)))")
+                }
+            }
+
+            segmentedControl.insertSegment(withTitle: title, at: mode.rawValue, animated: false)
         }
         segmentedControl.selectedSegmentIndex = 0
         segmentedControl.addTarget(self, action: #selector(segmentedControlDidChange), for: .valueChanged)
@@ -94,7 +102,7 @@ public class GroupMemberRequestsAndInvitesViewController: OWSTableViewController
             let modeHeader = UIStackView(arrangedSubviews: [segmentedControl])
             modeHeader.axis = .vertical
             modeHeader.alignment = .fill
-            modeHeader.layoutMargins = UIEdgeInsets(top: 20, leading: 20, bottom: 20, trailing: 20)
+            modeHeader.layoutMargins = UIEdgeInsets(top: 20, leading: 20, bottom: 0, trailing: 20)
             modeHeader.isLayoutMarginsRelativeArrangement = true
             modeSection.customHeaderView = modeHeader
             contents.addSection(modeSection)
@@ -121,14 +129,12 @@ public class GroupMemberRequestsAndInvitesViewController: OWSTableViewController
         let canApproveMemberRequests = groupViewHelper.canApproveMemberRequests
 
         let groupMembership = groupModel.groupMembership
-        let requestingMembersSorted = databaseStorage.uiRead { transaction in
-            self.contactsManager.sortSignalServiceAddresses(Array(groupMembership.requestingMembers),
-                                                            transaction: transaction)
+        let requestingMembersSorted = databaseStorage.read { transaction in
+            self.contactsManagerImpl.sortSignalServiceAddresses(Array(groupMembership.requestingMembers),
+                                                                transaction: transaction)
         }
 
         let section = OWSTableSection()
-        section.headerTitle = NSLocalizedString("PENDING_GROUP_MEMBERS_SECTION_TITLE_PENDING_MEMBER_REQUESTS",
-                                                comment: "Title for the 'pending member requests' section of the 'member requests and invites' view.")
         let footerFormat = NSLocalizedString("PENDING_GROUP_MEMBERS_SECTION_FOOTER_PENDING_MEMBER_REQUESTS_FORMAT",
                                                 comment: "Footer for the 'pending member requests' section of the 'member requests and invites' view. Embeds {{ the name of the group }}.")
         let groupName = self.contactsManager.displayNameWithSneakyTransaction(thread: oldGroupThread)
@@ -142,24 +148,26 @@ public class GroupMemberRequestsAndInvitesViewController: OWSTableViewController
                         return OWSTableItem.newCell()
                     }
 
-                    let cell = ContactTableViewCell(style: .default, reuseIdentifier: nil, allowUserInteraction: true)
+                    let cell = ContactTableViewCell(style: .default, reuseIdentifier: nil)
 
-                    if canApproveMemberRequests {
-                        cell.ows_setAccessoryView(self.buildMemberRequestButtons(address: address))
+                    Self.databaseStorage.read { transaction in
+                        let configuration = ContactCellConfiguration.build(address: address,
+                                                                           localUserDisplayMode: .asLocalUser,
+                                                                           transaction: transaction)
+                        configuration.allowUserInteraction = true
+
+                        if canApproveMemberRequests {
+                            configuration.accessoryView = self.buildMemberRequestButtons(address: address)
+                        }
+
+                        if address.isLocalAddress {
+                            cell.selectionStyle = .none
+                        } else {
+                            cell.selectionStyle = .default
+                        }
+
+                        cell.configure(configuration: configuration, transaction: transaction)
                     }
-
-                    if address.isLocalAddress {
-                        // Use a custom avatar to avoid using the "note to self" icon.
-                        let customAvatar = OWSProfileManager.shared().localProfileAvatarImage() ?? OWSContactAvatarBuilder(forLocalUserWithDiameter: kSmallAvatarSize).buildDefaultImage()
-                        cell.setCustomAvatar(customAvatar)
-                        cell.setCustomName(NSLocalizedString("GROUP_MEMBER_LOCAL_USER",
-                                                             comment: "Label indicating the local user."))
-                        cell.selectionStyle = .none
-                    } else {
-                        cell.selectionStyle = .default
-                    }
-
-                    cell.configure(withRecipientAddress: address)
                     return cell
                     }) { [weak self] in
                                                 self?.showMemberActionSheet(for: address)
@@ -173,25 +181,48 @@ public class GroupMemberRequestsAndInvitesViewController: OWSTableViewController
         contents.addSection(section)
     }
 
-    private func buildMemberRequestButtons(address: SignalServiceAddress) -> UIView {
+    private func buildMemberRequestButtons(address: SignalServiceAddress) -> ContactCellAccessoryView {
+        let buttonHeight: CGFloat = 28
+
         let denyButton = OWSButton()
-        denyButton.setTemplateImageName("deny-28", tintColor: Theme.primaryIconColor)
+        denyButton.layer.cornerRadius = buttonHeight / 2
+        denyButton.clipsToBounds = true
+        denyButton.setBackgroundImage(UIImage(color: Theme.secondaryBackgroundColor), for: .normal)
+        denyButton.setTemplateImageName("x-20", tintColor: Theme.primaryIconColor)
         denyButton.accessibilityIdentifier = "member-request-deny"
         denyButton.block = { [weak self] in
             self?.denyMemberRequest(address: address)
         }
 
         let approveButton = OWSButton()
-        approveButton.setTemplateImageName("approve-28", tintColor: Theme.primaryIconColor)
+        approveButton.layer.cornerRadius = buttonHeight / 2
+        approveButton.clipsToBounds = true
+        approveButton.setBackgroundImage(UIImage(color: Theme.secondaryBackgroundColor), for: .normal)
+        approveButton.setTemplateImageName("check-20", tintColor: Theme.primaryIconColor)
         approveButton.accessibilityIdentifier = "member-request-approveButton"
         approveButton.block = { [weak self] in
             self?.approveMemberRequest(address: address)
         }
 
-        let stackView = UIStackView(arrangedSubviews: [denyButton, approveButton])
-        stackView.axis = .horizontal
-        stackView.spacing = 18
-        return stackView
+        let denyWrapper = ManualLayoutView.wrapSubviewUsingIOSAutoLayout(denyButton)
+        let approveWrapper = ManualLayoutView.wrapSubviewUsingIOSAutoLayout(approveButton)
+
+        let denyButtonSize = CGSize.square(buttonHeight)
+        let approveButtonSize = CGSize.square(buttonHeight)
+
+        let stackView = ManualStackView(name: "stackView")
+        let stackConfig = CVStackViewConfig(axis: .horizontal,
+                                            alignment: .center,
+                                            spacing: 16,
+                                            layoutMargins: .zero)
+        let stackMeasurement = stackView.configure(config: stackConfig,
+                                                   subviews: [denyWrapper, approveWrapper],
+                                                   subviewInfos: [
+                                                    denyButtonSize.asManualSubviewInfo,
+                                                    approveButtonSize.asManualSubviewInfo
+                                                   ])
+        let stackSize = stackMeasurement.measuredSize
+        return ContactCellAccessoryView(accessoryView: stackView, size: stackSize)
     }
 
     private func approveMemberRequest(address: SignalServiceAddress) {
@@ -209,9 +240,9 @@ public class GroupMemberRequestsAndInvitesViewController: OWSTableViewController
         }
 
         let groupMembership = groupModel.groupMembership
-        let allPendingMembersSorted = databaseStorage.uiRead { transaction in
-            self.contactsManager.sortSignalServiceAddresses(Array(groupMembership.invitedMembers),
-                                                            transaction: transaction)
+        let allPendingMembersSorted = databaseStorage.read { transaction in
+            self.contactsManagerImpl.sortSignalServiceAddresses(Array(groupMembership.invitedMembers),
+                                                                transaction: transaction)
         }
 
         // Note that these collections retain their sorting from above.
@@ -242,16 +273,15 @@ public class GroupMemberRequestsAndInvitesViewController: OWSTableViewController
                                                      comment: "Title for the 'people you invited' section of the 'member requests and invites' view.")
         if membersInvitedByLocalUser.count > 0 {
             for address in membersInvitedByLocalUser {
-                localSection.add(OWSTableItem(customCellBlock: { [weak self] in
-                    guard let self = self else {
-                        owsFailDebug("Missing self")
-                        return OWSTableItem.newCell()
+                localSection.add(OWSTableItem(dequeueCellBlock: { tableView in
+                    guard let cell = tableView.dequeueReusableCell(withIdentifier: ContactTableViewCell.reuseIdentifier) as? ContactTableViewCell else {
+                        owsFailDebug("Missing cell.")
+                        return UITableViewCell()
                     }
 
-                    let cell = ContactTableViewCell()
                     cell.selectionStyle = canRevokeInvites ? .default : .none
-
-                    cell.configure(withRecipientAddress: address)
+                    cell.configureWithSneakyTransaction(address: address,
+                                                        localUserDisplayMode: .asUser)
                     return cell
                     }) { [weak self] in
                                                 self?.inviteFromLocalUserWasTapped(address,
@@ -274,9 +304,9 @@ public class GroupMemberRequestsAndInvitesViewController: OWSTableViewController
                                                           comment: "Footer for the 'invites by other group members' section of the 'member requests and invites' view.")
 
         if membersInvitedByOtherUsers.count > 0 {
-            let inviterAddresses = databaseStorage.uiRead { transaction in
-                self.contactsManager.sortSignalServiceAddresses(Array(membersInvitedByOtherUsers.keys),
-                                                                transaction: transaction)
+            let inviterAddresses = databaseStorage.read { transaction in
+                self.contactsManagerImpl.sortSignalServiceAddresses(Array(membersInvitedByOtherUsers.keys),
+                                                                    transaction: transaction)
             }
             for inviterAddress in inviterAddresses {
                 guard let invitedAddresses = membersInvitedByOtherUsers[inviterAddress] else {
@@ -284,35 +314,39 @@ public class GroupMemberRequestsAndInvitesViewController: OWSTableViewController
                     continue
                 }
 
-                otherUsersSection.add(OWSTableItem(customCellBlock: { [weak self] in
-                    guard let self = self else {
-                        owsFailDebug("Missing self")
-                        return OWSTableItem.newCell()
+                otherUsersSection.add(OWSTableItem(dequeueCellBlock: { tableView in
+                    guard let cell = tableView.dequeueReusableCell(withIdentifier: ContactTableViewCell.reuseIdentifier) as? ContactTableViewCell else {
+                        owsFailDebug("Missing cell.")
+                        return UITableViewCell()
                     }
 
-                    let cell = ContactTableViewCell()
                     cell.selectionStyle = canRevokeInvites ? .default : .none
 
-                    let inviterName = self.contactsManager.displayName(for: inviterAddress)
-                    let customName: String
-                    if invitedAddresses.count > 1 {
-                        let format = NSLocalizedString("PENDING_GROUP_MEMBERS_MEMBER_INVITED_N_USERS_FORMAT",
-                                                       comment: "Format for label indicating the a group member has invited N other users to the group. Embeds {{ %1$@ name of the inviting group member, %2$@ the number of users they have invited. }}.")
-                        customName = String(format: format, inviterName, OWSFormat.formatInt(invitedAddresses.count))
-                    } else {
-                        let format = NSLocalizedString("PENDING_GROUP_MEMBERS_MEMBER_INVITED_1_USER_FORMAT",
-                                                       comment: "Format for label indicating the a group member has invited 1 other user to the group. Embeds {{ the name of the inviting group member. }}.")
-                        customName = String(format: format, inviterName)
+                    Self.databaseStorage.read { transaction in
+                        let configuration = ContactCellConfiguration.build(address: inviterAddress,
+                                                                           localUserDisplayMode: .asUser,
+                                                                           transaction: transaction)
+                        let inviterName = Self.contactsManager.displayName(for: inviterAddress,
+                                                                           transaction: transaction)
+                        if invitedAddresses.count > 1 {
+                            let format = NSLocalizedString("PENDING_GROUP_MEMBERS_MEMBER_INVITED_N_USERS_FORMAT",
+                                                           comment: "Format for label indicating the a group member has invited N other users to the group. Embeds {{ %1$@ name of the inviting group member, %2$@ the number of users they have invited. }}.")
+                            configuration.customName = String(format: format,
+                                                              inviterName,
+                                                              OWSFormat.formatInt(invitedAddresses.count))
+                        } else {
+                            let format = NSLocalizedString("PENDING_GROUP_MEMBERS_MEMBER_INVITED_1_USER_FORMAT",
+                                                           comment: "Format for label indicating the a group member has invited 1 other user to the group. Embeds {{ the name of the inviting group member. }}.")
+                            configuration.customName = String(format: format, inviterName)
+                        }
+                        cell.configure(configuration: configuration, transaction: transaction)
                     }
-                    cell.setCustomName(customName)
-
-                    cell.configure(withRecipientAddress: inviterAddress)
 
                     return cell
-                    }) { [weak self] in
-                                                    self?.invitesFromOtherUserWasTapped(invitedAddresses: invitedAddresses,
-                                                                                        inviterAddress: inviterAddress,
-                                                                                        canRevoke: canRevokeInvites)
+                }) { [weak self] in
+                    self?.invitesFromOtherUserWasTapped(invitedAddresses: invitedAddresses,
+                                                        inviterAddress: inviterAddress,
+                                                        canRevoke: canRevokeInvites)
                 })
             }
         } else {
@@ -434,7 +468,7 @@ public class GroupMemberRequestsAndInvitesViewController: OWSTableViewController
 
     private func showMemberActionSheet(for address: SignalServiceAddress) {
         let memberActionSheet = MemberActionSheet(address: address, groupViewHelper: groupViewHelper)
-        memberActionSheet.present(fromViewController: self)
+        memberActionSheet.present(from: self)
     }
 
     private func presentRequestApprovedToast(address: SignalServiceAddress) {
@@ -451,12 +485,6 @@ public class GroupMemberRequestsAndInvitesViewController: OWSTableViewController
         let userName = contactsManager.displayName(for: address)
         let text = String(format: format, userName)
         presentToast(text: text)
-    }
-
-    private func presentToast(text: String) {
-        let toastController = ToastController(text: text)
-        let bottomInset = bottomLayoutGuide.length + 8
-        toastController.presentToastView(fromBottomOfView: self.view, inset: bottomInset)
     }
 }
 

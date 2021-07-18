@@ -1,5 +1,5 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 import Foundation
@@ -148,7 +148,7 @@ extension DeviceTransferService: MCSessionDelegate {
             // Try and restore the received data. If for some reason the app exits
             // or crashes at this point, we will retry the restore when the app next
             // launches.
-            guard restoreTransferredData(hotSwapDatabase: true) else {
+            guard restoreTransferredData(hotswapDatabase: true) else {
                 owsFail("Restore failed. Crashing, will try again on next launch.")
             }
 
@@ -267,7 +267,7 @@ extension DeviceTransferService: MCSessionDelegate {
             } else if let localURL = localURL {
                 OWSFileSystem.ensureDirectoryExists(DeviceTransferService.pendingTransferFilesDirectory.path)
 
-                guard let computedHash = Cryptography.computeSHA256DigestOfFile(at: localURL) else {
+                guard let computedHash = try? Cryptography.computeSHA256DigestOfFile(at: localURL) else {
                     return failTransfer(.assertion, "Failed to compute hash for \(file.identifier)")
                 }
 

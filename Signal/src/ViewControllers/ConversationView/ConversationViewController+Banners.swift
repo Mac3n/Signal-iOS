@@ -1,15 +1,14 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 import Foundation
 
-@objc
 public extension ConversationViewController {
 
-    static func createBannerWithTitle(title: String,
-                                      bannerColor: UIColor,
-                                      tapBlock: @escaping () -> Void) -> UIView {
+    static func createBanner(title: String,
+                             bannerColor: UIColor,
+                             tapBlock: @escaping () -> Void) -> UIView {
         owsAssertDebug(title.count > 0)
 
         let bannerView = GestureView()
@@ -41,14 +40,14 @@ public extension ConversationViewController {
 
     // MARK: - Pending Join Requests Banner
 
-    func createPendingJoinRequestBanner(viewState: CVCViewState,
-                                        count pendingMemberRequestCount: UInt,
+    func createPendingJoinRequestBanner(viewState: CVViewState,
+                                        count pendingMemberRequestCount: Int,
                                         viewMemberRequestsBlock: @escaping () -> Void) -> UIView {
         owsAssertDebug(pendingMemberRequestCount > 0)
 
         let format = NSLocalizedString("PENDING_GROUP_MEMBERS_REQUEST_BANNER_FORMAT",
                                        comment: "Format for banner indicating that there are pending member requests to join the group. Embeds {{ the number of pending member requests }}.")
-        let title = String(format: format, OWSFormat.formatUInt(pendingMemberRequestCount))
+        let title = String(format: format, OWSFormat.formatInt(pendingMemberRequestCount))
 
         let dismissButton = OWSButton(title: CommonStrings.dismissButton) { [weak self] in
             AssertIsOnMainThread()
@@ -73,8 +72,8 @@ public extension ConversationViewController {
             return nil
         }
         guard let groupThread = thread as? TSGroupThread,
-            groupThread.isGroupV1Thread else {
-                return nil
+              groupThread.isGroupV1Thread else {
+            return nil
         }
         guard groupThread.isLocalUserFullMember else {
             return nil
@@ -85,7 +84,7 @@ public extension ConversationViewController {
         return GroupsV2Migration.migrationInfoForManualMigration(groupThread: groupThread)
     }
 
-    func createMigrateGroupBanner(viewState: CVCViewState,
+    func createMigrateGroupBanner(viewState: CVViewState,
                                   migrationInfo: GroupsV2MigrationInfo) -> UIView {
 
         let title = NSLocalizedString("GROUPS_LEGACY_GROUP_MIGRATE_GROUP_OFFER_BANNER",
@@ -120,12 +119,137 @@ public extension ConversationViewController {
 
     // MARK: - Dropped Group Members Banner
 
-    func createDroppedGroupMembersBannerIfNecessary(viewState: CVCViewState) -> UIView? {
-        guard let droppedMembersInfo = buildDroppedMembersInfo() else {
+    func createDroppedGroupMembersBannerIfNecessary(viewState: CVViewState) -> UIView? {
+        guard let droppedMembersInfo = GroupMigrationActionSheet.buildDroppedMembersInfo(thread: thread) else {
             return nil
         }
         return createDroppedGroupMembersBanner(viewState: viewState,
                                                droppedMembersInfo: droppedMembersInfo)
+    }
+
+    // MARK: - Name collision banners
+
+    func createMessageRequestNameCollisionBannerIfNecessary(viewState: CVViewState) -> UIView? {
+        guard !viewState.isMessageRequestNameCollisionBannerHidden else { return nil }
+        guard let contactThread = thread as? TSContactThread else { return nil }
+
+        let collisionFinder = ContactThreadNameCollisionFinder(thread: contactThread)
+        let collisionCount = databaseStorage.read { readTx in
+            collisionFinder.findCollisions(transaction: readTx).count
+        }
+        guard collisionCount > 0 else { return nil }
+
+        let banner = NameCollisionBanner()
+        banner.labelText = NSLocalizedString(
+            "MESSAGE_REQUEST_NAME_COLLISON_BANNER_LABEL",
+            comment: "Banner label notifying user that a new message is from a user with the same name as an existing contact")
+        banner.reviewActionText = NSLocalizedString(
+            "MESSAGE_REQUEST_REVIEW_NAME_COLLISION",
+            comment: "Button to allow user to review known name collisions with an incoming message request")
+
+        banner.closeAction = { [weak self] in
+            viewState.isMessageRequestNameCollisionBannerHidden = true
+            self?.ensureBannerState()
+        }
+
+        banner.reviewAction = { [weak self] in
+            guard let self = self else { return }
+            let vc = NameCollisionResolutionViewController(collisionFinder: collisionFinder, collisionDelegate: self)
+            vc.present(fromViewController: self)
+        }
+
+        return banner
+    }
+
+    func createGroupMembershipCollisionBannerIfNecessary() -> UIView? {
+        guard let groupThread = thread as? TSGroupThread else { return nil }
+
+        // Collision discovery can be expensive, so we only build our banner if we've already done the expensive bit
+        guard let collisionFinder = viewState.groupNameCollisionFinder, collisionFinder.hasFetchedProfileUpdateMessages else {
+            guard viewState.groupNameCollisionFinder == nil else {
+                // We already have a collision finder. It just hasn't finished fetching.
+                return nil
+            }
+
+            let collisionFinder = GroupMembershipNameCollisionFinder(thread: groupThread)
+            viewState.groupNameCollisionFinder = collisionFinder
+
+            firstly(on: .sharedUserInitiated) {
+                self.databaseStorage.read { readTx in
+                    // Prewarm our collision finder off the main thread
+                    _ = collisionFinder.findCollisions(transaction: readTx)
+                }
+            }.done(on: .main) {
+                self.ensureBannerState()
+            }.catch { error in
+                owsFailDebug("\(error)")
+            }
+            return nil
+        }
+
+        // Fetch the necessary info to build the banner
+        guard let (title, avatar1, avatar2) = databaseStorage.read(block: { readTx -> (String, UIImage?, UIImage?)? in
+            let collisionSets = collisionFinder.findCollisions(transaction: readTx).standardSort(readTx: readTx)
+            guard !collisionSets.isEmpty, collisionSets[0].elements.count >= 2 else { return nil }
+
+            let totalCollisionElementCount = collisionSets.reduce(0) { $0 + $1.elements.count }
+
+            let title: String = {
+                if collisionSets.count == 1 {
+                    let titleFormat = NSLocalizedString(
+                        "GROUP_MEMBERSHIP_SINGLE_COLLISION_BANNER_TITLE_FORMAT",
+                        comment: "Banner title alerting user to a single name collision set ub the group membership. Embeds {{ total number of colliding members }}")
+                    return String(format: titleFormat, OWSFormat.formatInt(totalCollisionElementCount))
+                } else {
+                    let titleFormat = NSLocalizedString(
+                        "GROUP_MEMBERSHIP_MANY_COLLISIONS_BANNER_TITLE_FORMAT",
+                        comment: "Banner title alerting user to many name collisions in the group membership. Embeds {{ total number of colliding members }}")
+                    return String(format: titleFormat, OWSFormat.formatInt(totalCollisionElementCount))
+                }
+            }()
+
+            let fetchAvatarForAddress = { (address: SignalServiceAddress) -> UIImage? in
+                if address.isLocalAddress, let profileAvatar = self.profileManager.localProfileAvatarImage() {
+                    return profileAvatar.resizedImage(to: CGSize(square: 24))
+                } else {
+                    return Self.avatarBuilder.avatarImage(forAddress: address,
+                                                          diameterPoints: 24,
+                                                          localUserDisplayMode: .asUser,
+                                                          transaction: readTx)
+                }
+            }
+
+            let avatar1 = fetchAvatarForAddress(collisionSets[0].elements[0].address)
+            let avatar2 = fetchAvatarForAddress(collisionSets[0].elements[1].address)
+            return (title, avatar1, avatar2)
+
+        }) else { return nil }
+
+        let banner = NameCollisionBanner()
+        banner.labelText = title
+        banner.reviewActionText = NSLocalizedString(
+            "GROUP_MEMBERSHIP_NAME_COLLISION_BANNER_REVIEW_BUTTON",
+            comment: "Button to allow user to review known name collisions in group membership")
+        if let avatar1 = avatar1, let avatar2 = avatar2 {
+            banner.primaryImage = avatar1
+            banner.secondaryImage = avatar2
+        }
+
+        banner.closeAction = { [weak self] in
+            self?.databaseStorage.asyncWrite(block: { writeTx in
+                collisionFinder.markCollisionsAsResolved(transaction: writeTx)
+            }, completion: {
+                self?.ensureBannerState()
+            })
+        }
+
+        banner.reviewAction = { [weak self] in
+            guard let self = self else { return }
+            let vc = NameCollisionResolutionViewController(collisionFinder: collisionFinder, collisionDelegate: self)
+            vc.present(fromViewController: self)
+        }
+
+        return banner
     }
 }
 
@@ -133,43 +257,15 @@ public extension ConversationViewController {
 
 fileprivate extension ConversationViewController {
 
-    struct DroppedMembersInfo {
-        let groupThread: TSGroupThread
-        let addableMembers: Set<SignalServiceAddress>
-    }
+    typealias DroppedMembersInfo = GroupMigrationActionSheet.DroppedMembersInfo
 
-    func buildDroppedMembersInfo() -> DroppedMembersInfo? {
-        guard let groupThread = thread as? TSGroupThread else {
-            return nil
-        }
-        guard let groupModel = groupThread.groupModel as? TSGroupModelV2 else {
-            return nil
-        }
-        guard groupThread.isLocalUserFullMember else {
-            return nil
-        }
+}
 
-        var addableMembers = Set<SignalServiceAddress>()
-        Self.databaseStorage.read { transaction in
-            for address in groupModel.droppedMembers {
-                guard address.uuid != nil else {
-                    continue
-                }
-                guard GroupsV2Migration.doesUserHaveBothCapabilities(address: address, transaction: transaction) else {
-                    continue
-                }
-                addableMembers.insert(address)
-            }
-        }
-        guard !addableMembers.isEmpty else {
-            return nil
-        }
-        let droppedMembersInfo = DroppedMembersInfo(groupThread: groupThread,
-                                                    addableMembers: addableMembers)
-        return droppedMembersInfo
-    }
+// MARK: -
 
-    func createDroppedGroupMembersBanner(viewState: CVCViewState,
+fileprivate extension ConversationViewController {
+
+    func createDroppedGroupMembersBanner(viewState: CVViewState,
                                          droppedMembersInfo: DroppedMembersInfo) -> UIView {
 
         let title: String
@@ -245,17 +341,14 @@ fileprivate extension ConversationViewController {
 // MARK: -
 
 // A convenience view that allows block-based gesture handling.
-@objc
 public class GestureView: UIView {
-    @objc
     public required init() {
         super.init(frame: .zero)
 
         self.layoutMargins = .zero
     }
 
-    @available(*, unavailable, message:"use other constructor instead.")
-    @objc
+    @available(*, unavailable, message: "use other constructor instead.")
     required init?(coder aDecoder: NSCoder) {
         super.init(coder: aDecoder)
     }
@@ -264,7 +357,6 @@ public class GestureView: UIView {
 
     private var tapBlock: BlockType?
 
-    @objc
     public func addTap(block tapBlock: @escaping () -> Void) {
         owsAssertDebug(self.tapBlock == nil)
 
@@ -284,5 +376,353 @@ public class GestureView: UIView {
             return
         }
         tapBlock()
+    }
+}
+
+private class NameCollisionBanner: UIView {
+
+    var primaryImage: UIImage? {
+        get { primaryImageView.image }
+        set {
+            primaryImageView.image = newValue
+            setNeedsUpdateConstraints()
+        }
+    }
+
+    var secondaryImage: UIImage? {
+        get { secondaryImageView.image }
+        set {
+            secondaryImageView.image = newValue
+            setNeedsUpdateConstraints()
+        }
+    }
+
+    var labelText: String? {
+        get { label.text }
+        set { label.text = newValue }
+    }
+
+    var reviewActionText: String? {
+        get { reviewButton.title(for: .normal) }
+        set { reviewButton.setTitle(newValue, for: .normal) }
+    }
+
+    var reviewAction: () -> Void {
+        get { reviewButton.block }
+        set { reviewButton.block = newValue }
+    }
+
+    var closeAction: () -> Void {
+        get { closeButton.block }
+        set { closeButton.block = newValue }
+    }
+
+    private let label: UILabel = {
+        let label = UILabel()
+        label.numberOfLines = 0
+        label.font = UIFont.ows_dynamicTypeFootnote
+        label.textColor = Theme.secondaryTextAndIconColor
+        return label
+    }()
+
+    private let primaryImageView: UIImageView = {
+        let avatarSize = CGSize(square: 24)
+        let borderWidth: CGFloat = 2
+        let totalSize = avatarSize.plus(CGSize(square: borderWidth))
+
+        let imageView = UIImageView.withTemplateImageName(
+            "info-outline-24",
+            tintColor: Theme.secondaryTextAndIconColor)
+        imageView.contentMode = .center
+
+        imageView.layer.borderColor = Theme.secondaryBackgroundColor.cgColor
+        imageView.layer.borderWidth = borderWidth
+        imageView.layer.cornerRadius = totalSize.smallerAxis / 2
+        imageView.layer.masksToBounds = true
+
+        imageView.autoSetDimensions(to: totalSize)
+        imageView.setCompressionResistanceHigh()
+        imageView.setContentHuggingHigh()
+        return imageView
+    }()
+
+    private let secondaryImageView: UIImageView = {
+        let imageView = UIImageView()
+        imageView.layer.cornerRadius = 12
+        imageView.layer.masksToBounds = true
+
+        imageView.autoSetDimensions(to: CGSize(square: 24))
+        imageView.setCompressionResistanceHigh()
+        imageView.setContentHuggingHigh()
+        return imageView
+    }()
+
+    private let closeButton: OWSButton = {
+        let button = OWSButton(
+            imageName: "x-circle-16",
+            tintColor: Theme.secondaryTextAndIconColor)
+        button.accessibilityLabel = NSLocalizedString("BANNER_CLOSE_ACCESSIBILITY_LABEL",
+                                                      comment: "Accessibility label for banner close button")
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.setCompressionResistanceHigh()
+        button.setContentHuggingHigh()
+        return button
+    }()
+
+    private let reviewButton: OWSButton = {
+        let button = OWSButton()
+        button.setTitleColor(Theme.accentBlueColor, for: .normal)
+        button.setTitleColor(Theme.accentBlueColor.withAlphaComponent(0.7), for: .highlighted)
+        button.titleLabel?.font = UIFont.ows_dynamicTypeFootnote
+        button.translatesAutoresizingMaskIntoConstraints = false
+        return button
+    }()
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = Theme.secondaryBackgroundColor
+
+        [secondaryImageView, primaryImageView, label, closeButton, reviewButton]
+            .forEach { addSubview($0) }
+
+        // Offsets adjusted in updateConstraints() based on content
+        primaryImageViewConstraints = (
+            top: primaryImageView.autoPinEdge(.top, to: .top, of: self, withOffset: 18),
+            leading: primaryImageView.autoPinEdge(.leading, to: .leading, of: self, withOffset: 16),
+            trailing: label.autoPinEdge(.leading, to: .trailing, of: primaryImageView, withOffset: 16)
+        )
+        // Secondary image is always offset to the top left of the primary image
+        secondaryImageView.autoPinEdge(.top, to: .top, of: primaryImageView, withOffset: -12)
+        secondaryImageView.autoPinEdge(.leading, to: .leading, of: primaryImageView, withOffset: -12)
+
+        // Note that UIButtons are being aligned based on their content subviews
+        // UIButtons this small will have an intrinsic size larger than their content
+        // That extra padding between the content and its frame messes up alignment
+        label.autoPinEdge(toSuperviewEdge: .top, withInset: 12)
+        closeButton.imageView?.autoPinEdge(.top, to: .top, of: label)
+        reviewButton.titleLabel?.autoPinEdge(.top, to: .bottom, of: label, withOffset: 3)
+        reviewButton.titleLabel?.autoPinEdge(.bottom, to: .bottom, of: self, withOffset: -12)
+
+        // Aligning things this way is useful, because we can also increase the tap target
+        // for the tiny close button without messing up the appearance.
+        closeButton.contentEdgeInsets = UIEdgeInsets(hMargin: 8, vMargin: 8)
+        closeButton.imageView?.autoPinLeading(toTrailingEdgeOf: label, offset: 16)
+        closeButton.imageView?.autoPinTrailing(toEdgeOf: self, offset: -16)
+        reviewButton.titleLabel?.autoPinLeading(toEdgeOf: label)
+
+        accessibilityElements = [label, reviewButton, closeButton]
+    }
+
+    var primaryImageViewConstraints: (top: NSLayoutConstraint, leading: NSLayoutConstraint, trailing: NSLayoutConstraint)?
+
+    override func updateConstraints() {
+        super.updateConstraints()
+        guard let topConstraint = primaryImageViewConstraints?.top,
+              let leadingConstraint = primaryImageViewConstraints?.leading,
+              let trailingConstraint = primaryImageViewConstraints?.trailing else { return }
+
+        // If we have a secondary image, we want to adjust our constraints a bit
+        let hasSecondaryImage = (secondaryImage != nil)
+        topConstraint.constant = hasSecondaryImage ? 24 : 18
+        leadingConstraint.constant = hasSecondaryImage ? 28 : 16
+        trailingConstraint.constant = hasSecondaryImage ? 12 : 16
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+}
+
+// MARK: -
+
+extension ConversationViewController {
+
+    public func ensureBannerState() {
+        AssertIsOnMainThread()
+
+        // This method should be called rarely, so it's simplest to discard and
+        // rebuild the indicator view every time.
+        bannerView?.removeFromSuperview()
+        self.bannerView = nil
+
+        var banners = [UIView]()
+
+        // Most of these banners should hide themselves when the user scrolls
+        if !userHasScrolled {
+            let noLongerVerifiedAddresses = self.noLongerVerifiedAddresses
+            if !noLongerVerifiedAddresses.isEmpty {
+                let message: String
+                if noLongerVerifiedAddresses.count > 1 {
+                    message = NSLocalizedString("MESSAGES_VIEW_N_MEMBERS_NO_LONGER_VERIFIED",
+                                                comment: "Indicates that more than one member of this group conversation is no longer verified.")
+                } else {
+                    let address = noLongerVerifiedAddresses.first!
+                    let displayName = contactsManager.displayName(for: address)
+                    let format = (isGroupConversation
+                                    ? NSLocalizedString("MESSAGES_VIEW_1_MEMBER_NO_LONGER_VERIFIED_FORMAT",
+                                                        comment: "Indicates that one member of this group conversation is no longer verified. Embeds {{user's name or phone number}}.")
+                                    : NSLocalizedString("MESSAGES_VIEW_CONTACT_NO_LONGER_VERIFIED_FORMAT",
+                                                        comment: "Indicates that this 1:1 conversation is no longer verified. Embeds {{user's name or phone number}}."))
+                    message = String(format: format, displayName)
+                }
+
+                let banner = ConversationViewController.createBanner(title: message,
+                                                                     bannerColor: .ows_accentRed) { [weak self] in
+                    self?.noLongerVerifiedBannerViewWasTapped()
+                }
+                banners.append(banner)
+            }
+
+            func buildBlockStateMessage() -> String? {
+                guard isGroupConversation else {
+                    return nil
+                }
+                let blockedGroupMemberCount = self.blockedGroupMemberCount
+                if blockedGroupMemberCount == 1 {
+                    return NSLocalizedString("MESSAGES_VIEW_GROUP_1_MEMBER_BLOCKED",
+                                             comment: "Indicates that a single member of this group has been blocked.")
+                } else if blockedGroupMemberCount > 1 {
+                    return String(format: NSLocalizedString("MESSAGES_VIEW_GROUP_N_MEMBERS_BLOCKED_FORMAT",
+                                                            comment: "Indicates that some members of this group has been blocked. Embeds {{the number of blocked users in this group}}."),
+                                  OWSFormat.formatInt(blockedGroupMemberCount))
+                } else {
+                    return nil
+                }
+            }
+            if let blockStateMessage = buildBlockStateMessage() {
+                let banner = ConversationViewController.createBanner(title: blockStateMessage,
+                                                                     bannerColor: .ows_accentRed) { [weak self] in
+                    self?.blockBannerViewWasTapped()
+                }
+                banners.append(banner)
+            }
+
+            let pendingMemberRequestCount = self.pendingMemberRequestCount
+            if pendingMemberRequestCount > 0,
+               self.canApprovePendingMemberRequests,
+               !viewState.isPendingMemberRequestsBannerHidden {
+                let banner = self.createPendingJoinRequestBanner(viewState: viewState,
+                                                                 count: pendingMemberRequestCount) { [weak self] in
+                    self?.showConversationSettingsAndShowMemberRequests()
+                }
+                banners.append(banner)
+            }
+
+            if let migrationInfo = self.manualMigrationInfoForGroup,
+               migrationInfo.canGroupBeMigrated,
+               !viewState.isMigrateGroupBannerHidden,
+               !GroupManager.areMigrationsBlocking {
+                let banner = createMigrateGroupBanner(viewState: viewState, migrationInfo: migrationInfo)
+                banners.append(banner)
+            }
+
+            if let banner = createDroppedGroupMembersBannerIfNecessary(viewState: viewState),
+               !viewState.isDroppedGroupMembersBannerHidden {
+                banners.append(banner)
+            }
+        }
+
+        if let banner = createMessageRequestNameCollisionBannerIfNecessary(viewState: viewState) {
+            banners.append(banner)
+        }
+
+        if let banner = createGroupMembershipCollisionBannerIfNecessary() {
+            banners.append(banner)
+        }
+
+        if banners.isEmpty {
+            if hasViewDidAppearEverBegun {
+                updateContentInsets(animated: false)
+            }
+            return
+        }
+
+        let bannerView = UIStackView(arrangedSubviews: banners)
+        bannerView.axis = .vertical
+        bannerView.alignment = .fill
+        self.view.addSubview(bannerView)
+        bannerView.autoPin(toTopLayoutGuideOf: self, withInset: 0)
+        bannerView.autoPinEdge(toSuperviewEdge: .leading)
+        bannerView.autoPinEdge(toSuperviewEdge: .trailing)
+        self.view.layoutSubviews()
+
+        self.bannerView = bannerView
+        if hasViewDidAppearEverBegun {
+            updateContentInsets(animated: false)
+        }
+    }
+
+    private var pendingMemberRequestCount: Int {
+        if let groupThread = thread as? TSGroupThread {
+            return groupThread.groupMembership.requestingMembers.count
+        } else {
+            return 0
+        }
+    }
+
+    private var canApprovePendingMemberRequests: Bool {
+        if let groupThread = thread as? TSGroupThread {
+            return groupThread.isLocalUserFullMemberAndAdministrator
+        } else {
+            return false
+        }
+    }
+
+    private func blockBannerViewWasTapped() {
+        AssertIsOnMainThread()
+
+        if isBlockedConversation() {
+            // If this a blocked conversation, offer to unblock.
+            showUnblockConversationUI(completion: nil)
+        } else if isGroupConversation {
+            // If this a group conversation with at least one blocked member,
+            // Show the block list view.
+            let blockedGroupMemberCount = self.blockedGroupMemberCount
+            if blockedGroupMemberCount > 0 {
+                let vc = BlockListViewController()
+                navigationController?.pushViewController(vc, animated: true)
+            }
+        }
+    }
+
+    private func noLongerVerifiedBannerViewWasTapped() {
+        AssertIsOnMainThread()
+
+        let noLongerVerifiedAddresses = self.noLongerVerifiedAddresses
+        if noLongerVerifiedAddresses.isEmpty {
+            return
+        }
+        let hasMultiple = noLongerVerifiedAddresses.count > 1
+
+        let actionSheet = ActionSheetController()
+
+        actionSheet.addAction(ActionSheetAction(title: (hasMultiple
+                                                            ? NSLocalizedString("VERIFY_PRIVACY_MULTIPLE",
+                                                                                comment: "Label for button or row which allows users to verify the safety numbers of multiple users.")
+                                                            : NSLocalizedString("VERIFY_PRIVACY",
+                                                                                comment: "Label for button or row which allows users to verify the safety number of another user.")),
+                                                style: .default) { [weak self] _ in
+            self?.showNoLongerVerifiedUI()
+        })
+
+        actionSheet.addAction(ActionSheetAction(title: CommonStrings.dismissButton,
+                                                accessibilityIdentifier: "dismiss",
+                                                style: .cancel) { [weak self] _ in
+            self?.resetVerificationStateToDefault()
+        })
+
+        dismissKeyBoard()
+        presentActionSheet(actionSheet)
+    }
+
+    private var blockedGroupMemberCount: Int {
+        guard let groupThread = thread as? TSGroupThread else {
+            owsFailDebug("Invalid thread.")
+            return 0
+        }
+        let blockedMembers = groupThread.groupModel.groupMembers.filter { address in
+            Self.blockingManager.isAddressBlocked(address)
+        }
+        return blockedMembers.count
     }
 }

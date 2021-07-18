@@ -1,5 +1,5 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 import Foundation
@@ -86,14 +86,6 @@ public class ThreadMappingDiff: NSObject {
 @objc
 class ThreadMapping: NSObject {
 
-    // MARK: - Dependencies
-
-    private var threadReadCache: ThreadReadCache {
-        SSKEnvironment.shared.modelReadCaches.threadReadCache
-    }
-
-    // MARK: -
-
     private var pinnedThreads = OrderedDictionary<String, TSThread>()
     private var unpinnedThreads: [TSThread] = []
 
@@ -110,7 +102,7 @@ class ThreadMapping: NSObject {
     var inboxCount: UInt = 0
 
     @objc
-    var hasPinnedAndUnpinnedThreads: Bool { !pinnedThreads.orderedKeys.isEmpty && !unpinnedThreads.isEmpty }
+    var hasPinnedAndUnpinnedThreads: Bool { !pinnedThreads.isEmpty && !unpinnedThreads.isEmpty }
 
     @objc
     var pinnedThreadIds: [String] { pinnedThreads.orderedKeys }
@@ -142,7 +134,7 @@ class ThreadMapping: NSObject {
     func thread(indexPath: IndexPath) -> TSThread? {
         switch indexPath.section {
         case pinnedSection:
-            return pinnedThreads.orderedValues[safe: indexPath.item]
+            return pinnedThreads[safe: indexPath.item]?.value
         case unpinnedSection:
             return unpinnedThreads[safe: indexPath.item]
         default:
@@ -227,7 +219,7 @@ class ThreadMapping: NSObject {
         var pinnedThreads = [TSThread]()
         var threads = [TSThread]()
 
-        var pinnedThreadIds = PinnedThreadManager.pinnedThreadIds
+        let pinnedThreadIds = PinnedThreadManager.pinnedThreadIds
 
         defer {
             // Pinned threads are always ordered in the order they were pinned.
@@ -263,8 +255,8 @@ class ThreadMapping: NSObject {
         guard !threadIds.isEmpty else { return }
 
         // 2. Try to pull as many threads as possible from the cache.
-        var threadIdToModelMap: [String: TSThread] = threadReadCache.getThreadsIfInCache(forUniqueIds: threadIds,
-                                                                                         transaction: transaction)
+        var threadIdToModelMap: [String: TSThread] = modelReadCaches.threadReadCache.getThreadsIfInCache(forUniqueIds: threadIds,
+                                                                                                         transaction: transaction)
         var threadsToLoad = Set(threadIds)
         threadsToLoad.subtract(threadIdToModelMap.keys)
 
@@ -273,7 +265,7 @@ class ThreadMapping: NSObject {
         //
         // NOTE: There's an upper bound on how long SQL queries should be.
         //       We use kMaxIncrementalRowChanges to limit query size.
-        guard threadsToLoad.count <= UIDatabaseObserver.kMaxIncrementalRowChanges else {
+        guard threadsToLoad.count <= DatabaseChangeObserver.kMaxIncrementalRowChanges else {
             try loadWithoutCache()
             return
         }
@@ -578,16 +570,42 @@ class ThreadMapping: NSObject {
             }
         }
 
+        func logThreadIds(_ threadIds: [String], name: String) {
+            Logger.verbose("\(name)[\(threadIds.count)]: \(threadIds.joined(separator: "\n"))")
+        }
+
         // Once the moves are complete, the new ordering should be correct.
         guard newPinnedThreadIds == naivePinnedThreadIdOrdering else {
-            Logger.verbose("newPinnedThreadIds: \(newPinnedThreadIds)")
-            Logger.verbose("naivePinnedThreadIdOrdering: \(naivePinnedThreadIdOrdering)")
+            logThreadIds(newPinnedThreadIds, name: "newPinnedThreadIds")
+            logThreadIds(oldPinnedThreadIds, name: "oldPinnedThreadIds")
+            logThreadIds(newUnpinnedThreadIds, name: "newUnpinnedThreadIds")
+            logThreadIds(oldUnpinnedThreadIds, name: "oldUnpinnedThreadIds")
+            logThreadIds(newlyPinnedThreadIds, name: "newlyPinnedThreadIds")
+            logThreadIds(newlyUnpinnedThreadIds, name: "newlyUnpinnedThreadIds")
+            logThreadIds(naivePinnedThreadIdOrdering, name: "naivePinnedThreadIdOrdering")
+            logThreadIds(naiveUnpinnedThreadIdOrdering, name: "naiveUnpinnedThreadIdOrdering")
+            logThreadIds(insertedThreadIds, name: "insertedThreadIds")
+            logThreadIds(deletedThreadIds, name: "deletedThreadIds")
+            logThreadIds(movedToNewSectionThreadIds, name: "movedToNewSectionThreadIds")
+            logThreadIds(Array(possiblyMovedWithinSectionThreadIds), name: "possiblyMovedWithinSectionThreadIds")
+            logThreadIds(movedThreadIds, name: "movedThreadIds")
             throw OWSAssertionError("Could not reorder pinned contents.")
         }
 
         guard newUnpinnedThreadIds == naiveUnpinnedThreadIdOrdering else {
-            Logger.verbose("newUnpinnedThreadIds: \(newUnpinnedThreadIds)")
-            Logger.verbose("naiveUnpinnedThreadIdOrdering: \(naiveUnpinnedThreadIdOrdering)")
+            logThreadIds(newPinnedThreadIds, name: "newPinnedThreadIds")
+            logThreadIds(oldPinnedThreadIds, name: "oldPinnedThreadIds")
+            logThreadIds(newUnpinnedThreadIds, name: "newUnpinnedThreadIds")
+            logThreadIds(oldUnpinnedThreadIds, name: "oldUnpinnedThreadIds")
+            logThreadIds(newlyPinnedThreadIds, name: "newlyPinnedThreadIds")
+            logThreadIds(newlyUnpinnedThreadIds, name: "newlyUnpinnedThreadIds")
+            logThreadIds(naivePinnedThreadIdOrdering, name: "naivePinnedThreadIdOrdering")
+            logThreadIds(naiveUnpinnedThreadIdOrdering, name: "naiveUnpinnedThreadIdOrdering")
+            logThreadIds(insertedThreadIds, name: "insertedThreadIds")
+            logThreadIds(deletedThreadIds, name: "deletedThreadIds")
+            logThreadIds(movedToNewSectionThreadIds, name: "movedToNewSectionThreadIds")
+            logThreadIds(Array(possiblyMovedWithinSectionThreadIds), name: "possiblyMovedWithinSectionThreadIds")
+            logThreadIds(movedThreadIds, name: "movedThreadIds")
             throw OWSAssertionError("Could not reorder unpinned contents.")
         }
 
@@ -616,54 +634,6 @@ class ThreadMapping: NSObject {
         }
 
         return ThreadMappingDiff(sectionChanges: [], rowChanges: rowChanges)
-    }
-
-    // For performance reasons, the database modification notifications are used
-    // to determine which items were modified.  If YapDatabase ever changes the
-    // structure or semantics of these notifications, we'll need to update this
-    // code to reflect that.
-    @objc
-    public func updatedYapItemIds(forNotifications notifications: [NSNotification]) -> Set<String> {
-        // We'll move this into the Yap adapter when addressing updates/observation
-        let viewName: String = TSThreadDatabaseViewExtensionName
-
-        var updatedItemIds = Set<String>()
-        for notification in notifications {
-            // Unpack the YDB notification, looking for row changes.
-            guard let userInfo =
-                notification.userInfo else {
-                    owsFailDebug("Missing userInfo.")
-                    continue
-            }
-            guard let viewChangesets =
-                userInfo[YapDatabaseExtensionsKey] as? NSDictionary else {
-                    // No changes for any views, skip.
-                    continue
-            }
-            guard let changeset =
-                viewChangesets[viewName] as? NSDictionary else {
-                    // No changes for this view, skip.
-                    continue
-            }
-            // This constant matches a private constant in YDB.
-            let changeset_key_changes: String = "changes"
-            guard let changesetChanges = changeset[changeset_key_changes] as? [Any] else {
-                owsFailDebug("Missing changeset changes.")
-                continue
-            }
-            for change in changesetChanges {
-                if change as? YapDatabaseViewSectionChange != nil {
-                    // Ignore.
-                } else if let rowChange = change as? YapDatabaseViewRowChange {
-                    updatedItemIds.insert(rowChange.collectionKey.key)
-                } else {
-                    owsFailDebug("Invalid change: \(type(of: change)).")
-                    continue
-                }
-            }
-        }
-
-        return updatedItemIds
     }
 }
 

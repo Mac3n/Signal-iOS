@@ -1,22 +1,27 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 import Foundation
 
 @objc
-protocol InputAccessoryViewPlaceholderDelegate: class {
+public protocol InputAccessoryViewPlaceholderDelegate: AnyObject {
     func inputAccessoryPlaceholderKeyboardIsPresenting(animationDuration: TimeInterval, animationCurve: UIView.AnimationCurve)
+    func inputAccessoryPlaceholderKeyboardDidPresent()
     func inputAccessoryPlaceholderKeyboardIsDismissing(animationDuration: TimeInterval, animationCurve: UIView.AnimationCurve)
+    func inputAccessoryPlaceholderKeyboardDidDismiss()
     func inputAccessoryPlaceholderKeyboardIsDismissingInteractively()
 }
+
+// MARK: -
 
 /// Input accessory views always render at the full width of the window.
 /// This wrapper allows resizing the accessory view to fit within its
 /// presenting view.
 @objc
 public class InputAccessoryViewPlaceholder: UIView {
-    @objc weak var delegate: InputAccessoryViewPlaceholderDelegate?
+    @objc
+    public weak var delegate: InputAccessoryViewPlaceholderDelegate?
 
     /// The amount of the application frame that is overlapped
     /// by the keyboard.
@@ -75,24 +80,43 @@ public class InputAccessoryViewPlaceholder: UIView {
         set {
             guard newValue != desiredHeight else { return }
             heightConstraint.constant = newValue
+            UIView.performWithoutAnimation {
+                heightConstraintView.layoutIfNeeded()
+                self.layoutIfNeeded()
+                superview?.layoutIfNeeded()
+            }
         }
         get {
             return heightConstraint.constant
         }
     }
 
+    private let heightConstraintView = UIView()
+
     private lazy var heightConstraint: NSLayoutConstraint = {
-        let view = UIView()
-        addSubview(view)
-        view.autoPinHeightToSuperview()
-        return view.autoSetDimension(.height, toSize: 0)
+        addSubview(heightConstraintView)
+        heightConstraintView.autoPinHeightToSuperview()
+        return heightConstraintView.autoSetDimension(.height, toSize: 0)
     }()
 
-    private enum KeyboardState {
+    private enum KeyboardState: CustomStringConvertible {
         case dismissed
         case dismissing
         case presented
         case presenting(frame: CGRect)
+
+        public var description: String {
+            switch self {
+            case .dismissed:
+                return "dismissed"
+            case .dismissing:
+                return "dismissing"
+            case .presented:
+                return "presented"
+            case .presenting:
+                return "presenting"
+            }
+        }
     }
     private var keyboardState: KeyboardState = .dismissed
 
@@ -198,6 +222,7 @@ public class InputAccessoryViewPlaceholder: UIView {
     @objc
     private func keyboardDidPresent(_ notification: Notification) {
         keyboardState = .presented
+        delegate?.inputAccessoryPlaceholderKeyboardDidPresent()
     }
 
     @objc
@@ -217,5 +242,6 @@ public class InputAccessoryViewPlaceholder: UIView {
     @objc
     private func keyboardDidDismiss(_ notification: Notification) {
         keyboardState = .dismissed
+        delegate?.inputAccessoryPlaceholderKeyboardDidDismiss()
     }
 }

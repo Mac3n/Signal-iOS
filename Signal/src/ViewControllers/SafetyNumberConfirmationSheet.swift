@@ -1,5 +1,5 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 import Foundation
@@ -46,12 +46,12 @@ class SafetyNumberConfirmationSheet: UIViewController {
         modalPresentationStyle = .custom
         transitioningDelegate = self
 
-        SDSDatabaseStorage.shared.uiRead { transaction in
+        SDSDatabaseStorage.shared.read { transaction in
             self.items = addresses.map {
                 return Item(
                     address: $0,
-                    displayName: Environment.shared.contactsManager.displayName(for: $0, transaction: transaction),
-                    verificationState: OWSIdentityManager.shared().verificationState(for: $0, transaction: transaction)
+                    displayName: Self.contactsManager.displayName(for: $0, transaction: transaction),
+                    verificationState: Self.identityManager.verificationState(for: $0, transaction: transaction)
                 )
             }
         }
@@ -93,7 +93,7 @@ class SafetyNumberConfirmationSheet: UIViewController {
     }
 
     private class func untrustedIdentitiesForSending(addresses: [SignalServiceAddress]) -> [SignalServiceAddress] {
-        return addresses.filter { OWSIdentityManager.shared().untrustedIdentityForSending(to: $0) != nil }
+        return addresses.filter { Self.identityManager.untrustedIdentityForSending(to: $0) != nil }
     }
 
     // MARK: -
@@ -168,7 +168,7 @@ class SafetyNumberConfirmationSheet: UIViewController {
         tableView.dataSource = self
         tableView.separatorStyle = .none
         tableView.backgroundColor = .clear
-        tableView.register(SafetyNumberCell.self, forCellReuseIdentifier: SafetyNumberCell.reuseIdentifier())
+        tableView.register(SafetyNumberCell.self, forCellReuseIdentifier: SafetyNumberCell.reuseIdentifier)
         tableView.setContentHuggingHigh()
         tableView.setCompressionResistanceLow()
 
@@ -438,6 +438,8 @@ class SafetyNumberConfirmationSheet: UIViewController {
     }
 }
 
+// MARK: -
+
 extension SafetyNumberConfirmationSheet: UITableViewDelegate, UITableViewDataSource {
     func numberOfSections(in tableView: UITableView) -> Int {
         return 1
@@ -448,7 +450,8 @@ extension SafetyNumberConfirmationSheet: UITableViewDelegate, UITableViewDataSou
     }
 
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        let cell = tableView.dequeueReusableCell(withIdentifier: SafetyNumberCell.reuseIdentifier(), for: indexPath)
+        let cell = tableView.dequeueReusableCell(withIdentifier: SafetyNumberCell.reuseIdentifier,
+                                                 for: indexPath)
 
         guard let contactCell = cell as? SafetyNumberCell else {
             return cell
@@ -466,11 +469,16 @@ extension SafetyNumberConfirmationSheet: UITableViewDelegate, UITableViewDataSou
     }
 }
 
+// MARK: -
+
 private class SafetyNumberCell: ContactTableViewCell {
+
+    open override class var reuseIdentifier: String { "SafetyNumberCell" }
+
     let button = OWSFlatButton()
 
-    init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
-        super.init(style: style, reuseIdentifier: reuseIdentifier, allowUserInteraction: true)
+    override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
+        super.init(style: style, reuseIdentifier: reuseIdentifier)
 
         selectionStyle = .none
 
@@ -484,37 +492,58 @@ private class SafetyNumberCell: ContactTableViewCell {
         button.contentEdgeInsets = UIEdgeInsets(top: 12, left: 12, bottom: 12, right: 12)
     }
 
+    required init(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
     func configure(item: SafetyNumberConfirmationSheet.Item, theme: Theme.ActionSheet, viewController: UIViewController) {
-        configure(withRecipientAddress: item.address)
-
-        ows_setAccessoryView(button)
-        backgroundColor = .clear
-        button.setBackgroundColors(upColor: theme.safetyNumberChangeButtonBackgroundColor)
-        button.setTitleColor(theme.safetyNumberChangeButtonTextColor)
-        forceDarkAppearance = (theme == .translucentDark)
-
-        if let verificationState = item.verificationState, verificationState == .noLongerVerified {
-            let previouslyVerified = NSMutableAttributedString()
-            previouslyVerified.appendTemplatedImage(named: "check-12", font: UIFont.ows_regularFont(withSize: 11))
-            previouslyVerified.append(" ")
-            previouslyVerified.append(
-                NSLocalizedString("SAFETY_NUMBER_CONFIRMATION_PREVIOUSLY_VERIFIED",
-                                  comment: "Text explaining that the given contact previously had their safety number verified.")
-            )
-
-            setAttributedSubtitle(previouslyVerified)
-        } else if let displayName = item.displayName {
-            if let phoneNumber = item.address.phoneNumber {
-                let formattedPhoneNumber = PhoneNumber.bestEffortLocalizedPhoneNumber(withE164: phoneNumber)
-                if displayName != formattedPhoneNumber {
-                    setAttributedSubtitle(NSAttributedString(string: formattedPhoneNumber))
-                }
-            }
-        }
-
         button.setPressedBlock {
             FingerprintViewController.present(from: viewController, address: item.address)
         }
+
+        Self.databaseStorage.read { transaction in
+            let configuration = ContactCellConfiguration.build(address: item.address,
+                                                               localUserDisplayMode: .asUser,
+                                                               transaction: transaction)
+            configuration.allowUserInteraction = true
+
+            configuration.forceDarkAppearance = (theme == .translucentDark)
+
+            let buttonSize = button.intrinsicContentSize
+            button.removeFromSuperview()
+            let buttonWrapper = ManualLayoutView.wrapSubviewUsingIOSAutoLayout(button)
+            configuration.accessoryView = ContactCellAccessoryView(accessoryView: buttonWrapper,
+                                                                   size: buttonSize)
+
+            if let verificationState = item.verificationState, verificationState == .noLongerVerified {
+                let previouslyVerified = NSMutableAttributedString()
+                previouslyVerified.appendTemplatedImage(named: "check-12", font: UIFont.ows_regularFont(withSize: 11))
+                previouslyVerified.append(" ")
+                previouslyVerified.append(
+                    NSLocalizedString("SAFETY_NUMBER_CONFIRMATION_PREVIOUSLY_VERIFIED",
+                                      comment: "Text explaining that the given contact previously had their safety number verified.")
+                )
+                configuration.attributedSubtitle = previouslyVerified
+            } else if let displayName = item.displayName {
+                if let phoneNumber = item.address.phoneNumber {
+                    let formattedPhoneNumber = PhoneNumber.bestEffortLocalizedPhoneNumber(withE164: phoneNumber)
+                    if displayName != formattedPhoneNumber {
+                        configuration.attributedSubtitle = NSAttributedString(string: formattedPhoneNumber)
+                    }
+                }
+            }
+
+            self.configure(configuration: configuration, transaction: transaction)
+        }
+    }
+
+    override func configure(configuration: ContactCellConfiguration, transaction: SDSAnyReadTransaction) {
+        super.configure(configuration: configuration, transaction: transaction)
+        let theme: Theme.ActionSheet = (configuration.forceDarkAppearance) ? .translucentDark : .default
+
+        backgroundColor = theme.backgroundColor
+        button.setBackgroundColors(upColor: theme.safetyNumberChangeButtonBackgroundColor)
+        button.setTitleColor(theme.safetyNumberChangeButtonTextColor)
     }
 }
 

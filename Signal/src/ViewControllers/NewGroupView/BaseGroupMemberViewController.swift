@@ -1,11 +1,11 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 import Foundation
 import PromiseKit
 
-protocol GroupMemberViewDelegate: class {
+protocol GroupMemberViewDelegate: AnyObject {
     var groupMemberViewRecipientSet: OrderedSet<PickedRecipient> { get }
 
     var groupMemberViewHasUnsavedChanges: Bool { get }
@@ -26,7 +26,8 @@ protocol GroupMemberViewDelegate: class {
 
     func groupMemberViewIsGroupFull_RecommendedLimit() -> Bool
 
-    func groupMemberViewIsPreExistingMember(_ recipient: PickedRecipient) -> Bool
+    func groupMemberViewIsPreExistingMember(_ recipient: PickedRecipient,
+                                            transaction: SDSAnyReadTransaction) -> Bool
 
     func groupMemberViewIsGroupsV2Required() -> Bool
 
@@ -79,15 +80,13 @@ public class BaseGroupMemberViewController: OWSViewController {
     public override func viewDidLoad() {
         super.viewDidLoad()
 
-        view.backgroundColor = Theme.backgroundColor
-
         // First section.
 
         memberBar.delegate = self
 
         // Don't use dynamic type in this label.
         memberCountLabel.font = UIFont.ows_dynamicTypeBody2.withSize(12)
-        memberCountLabel.textColor = Theme.secondaryTextAndIconColor
+        memberCountLabel.textColor = Theme.isDarkThemeEnabled ? .ows_gray05 : .ows_gray60
         memberCountLabel.textAlignment = CurrentAppContext().isRTL ? .left : .right
 
         memberCountWrapper.addSubview(memberCountLabel)
@@ -205,7 +204,7 @@ public class BaseGroupMemberViewController: OWSViewController {
     }
 
     private func updateMemberBar() {
-        memberBar.setMembers(databaseStorage.uiRead { transaction in
+        memberBar.setMembers(databaseStorage.read { transaction in
             self.orderedMembers(shouldSort: false, transaction: transaction)
         })
     }
@@ -225,13 +224,11 @@ public class BaseGroupMemberViewController: OWSViewController {
             let displayName = self.contactsManager.displayName(for: address, transaction: transaction)
             let shortDisplayName = self.contactsManager.shortDisplayName(for: address, transaction: transaction)
             let comparableName = self.contactsManager.comparableName(for: address, transaction: transaction)
-            let conversationColorName = self.contactsManager.conversationColorName(for: address, transaction: transaction)
             return NewGroupMember(recipient: recipient,
                                   address: address,
                                   displayName: displayName,
                                   shortName: shortDisplayName,
-                                  comparableName: comparableName,
-                                  conversationColorName: conversationColorName)
+                                  comparableName: comparableName)
         }
         if shouldSort {
             members.sort { (left, right) in
@@ -284,15 +281,23 @@ public class BaseGroupMemberViewController: OWSViewController {
     public override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
 
+        recipientPicker.applyTheme(to: self)
+
         guard let navigationController = navigationController else {
             owsFailDebug("Missing navigationController.")
             return
         }
         if navigationController.viewControllers.count == 1 {
-            navigationItem.leftBarButtonItem = UIBarButtonItem(barButtonSystemItem: .stop,
+            navigationItem.leftBarButtonItem = UIBarButtonItem(barButtonSystemItem: .done,
                                                                target: self,
                                                                action: #selector(dismissPressed))
         }
+    }
+
+    public override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+
+        recipientPicker.removeTheme(from: self)
     }
 
     @objc
@@ -339,7 +344,10 @@ extension BaseGroupMemberViewController: RecipientPickerDelegate {
             owsFailDebug("Missing groupMemberViewDelegate.")
             return .unknownError
         }
-        guard !groupMemberViewDelegate.groupMemberViewIsPreExistingMember(recipient) else {
+        guard (Self.databaseStorage.read { transaction in
+            !groupMemberViewDelegate.groupMemberViewIsPreExistingMember(recipient,
+                                                                       transaction: transaction)
+        }) else {
             return .duplicateGroupMember
         }
         return .canBeSelected
@@ -359,7 +367,10 @@ extension BaseGroupMemberViewController: RecipientPickerDelegate {
             owsFailDebug("Missing groupMemberViewDelegate.")
             return
         }
-        guard !groupMemberViewDelegate.groupMemberViewIsPreExistingMember(recipient) else {
+        guard (Self.databaseStorage.read { transaction in
+            !groupMemberViewDelegate.groupMemberViewIsPreExistingMember(recipient,
+                                                                       transaction: transaction)
+        }) else {
             owsFailDebug("Can't re-add pre-existing member.")
             return
         }
@@ -492,7 +503,8 @@ extension BaseGroupMemberViewController: RecipientPickerDelegate {
     }
 
     func recipientPicker(_ recipientPickerViewController: RecipientPickerViewController,
-                         accessoryMessageForRecipient recipient: PickedRecipient) -> String? {
+                         accessoryMessageForRecipient recipient: PickedRecipient,
+                         transaction: SDSAnyReadTransaction) -> String? {
         guard let address = recipient.address else {
             owsFailDebug("Missing address.")
             return nil
@@ -515,7 +527,8 @@ extension BaseGroupMemberViewController: RecipientPickerDelegate {
     }
 
     func recipientPicker(_ recipientPickerViewController: RecipientPickerViewController,
-                         accessoryViewForRecipient recipient: PickedRecipient) -> UIView? {
+                         accessoryViewForRecipient recipient: PickedRecipient,
+                         transaction: SDSAnyReadTransaction) -> ContactCellAccessoryView? {
         guard let address = recipient.address else {
             owsFailDebug("Missing address.")
             return nil
@@ -531,9 +544,10 @@ extension BaseGroupMemberViewController: RecipientPickerDelegate {
 
         let isCurrentMember = recipientSet.contains(recipient)
         let isBlocked = self.contactsViewHelper.isSignalServiceAddressBlocked(address)
-        let isPreExistingMember = groupMemberViewDelegate.groupMemberViewIsPreExistingMember(recipient)
+        let isPreExistingMember = groupMemberViewDelegate.groupMemberViewIsPreExistingMember(recipient,
+                                                                                             transaction: transaction)
 
-        let imageView = UIImageView()
+        let imageView = CVImageView()
         if isPreExistingMember {
             imageView.setTemplateImageName("check-circle-solid-24", tintColor: Theme.washColor)
         } else if isCurrentMember {
@@ -544,11 +558,13 @@ extension BaseGroupMemberViewController: RecipientPickerDelegate {
         } else {
             imageView.setTemplateImageName("empty-circle-outline-24", tintColor: .ows_gray25)
         }
-        return imageView
+        return ContactCellAccessoryView(accessoryView: imageView, size: .square(24))
     }
 
     func recipientPicker(_ recipientPickerViewController: RecipientPickerViewController,
-                         attributedSubtitleForRecipient recipient: PickedRecipient) -> NSAttributedString? {
+                         attributedSubtitleForRecipient recipient: PickedRecipient,
+                         transaction: SDSAnyReadTransaction) -> NSAttributedString? {
+
         guard let address = recipient.address else {
             owsFailDebug("Recipient missing address.")
             return nil
@@ -558,16 +574,30 @@ extension BaseGroupMemberViewController: RecipientPickerDelegate {
             // This is internal-only; we don't need to localize.
             items.append("No UUID")
         }
-        databaseStorage.read { transaction in
-            if !GroupManager.doesUserHaveGroupsV2Capability(address: address,
-                                                            transaction: transaction) {
-                // This is internal-only; we don't need to localize.
-                items.append("No capability")
+        let hasProfileKey = nil != Self.profileManager.profileKeyData(for: address,
+                                                                      transaction: transaction)
+        // Only show the "missing gv2 capability" warning if we have the
+        // user's profile key.
+        if !GroupManager.doesUserHaveGroupsV2Capability(address: address,
+                                                        transaction: transaction),
+           hasProfileKey {
+            // This is internal-only; we don't need to localize.
+            items.append("No capability")
+        }
+
+        func defaultSubtitle() -> NSAttributedString? {
+            guard !address.isLocalAddress else {
+                return nil
             }
+            guard let bioForDisplay = Self.profileManagerImpl.profileBioForDisplay(for: address,
+                                                                                   transaction: transaction) else {
+                return nil
+            }
+            return NSAttributedString(string: bioForDisplay)
         }
 
         guard !items.isEmpty else {
-            return nil
+            return defaultSubtitle()
         }
         if GroupManager.areMigrationsBlocking {
             let warning = NSLocalizedString("NEW_GROUP_CREATION_MEMBER_DOES_NOT_SUPPORT_NEW_GROUPS",
@@ -575,7 +605,7 @@ extension BaseGroupMemberViewController: RecipientPickerDelegate {
             return warning.attributedString()
        }
         guard DebugFlags.groupsV2memberStatusIndicators else {
-            return nil
+            return defaultSubtitle()
         }
         return NSAttributedString(string: items.joined(separator: ", "),
                                   attributes: [

@@ -1,5 +1,5 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 import Foundation
@@ -25,13 +25,14 @@ public class SessionResetJobQueue: NSObject, JobQueue {
     }
     public static let maxRetries: UInt = 10
     public let requiresInternet: Bool = true
+    public var isEnabled: Bool { CurrentAppContext().isMainApp }
     public var runningOperations = AtomicArray<SessionResetOperation>()
 
     @objc
     public override init() {
         super.init()
 
-        AppReadiness.runNowOrWhenAppDidBecomeReady {
+        AppReadiness.runNowOrWhenAppDidBecomeReadySync {
             self.setup()
         }
     }
@@ -89,20 +90,6 @@ public class SessionResetOperation: OWSOperation, DurableOperation {
     @objc public required init(contactThread: TSContactThread, jobRecord: OWSSessionResetJobRecord) {
         self.contactThread = contactThread
         self.jobRecord = jobRecord
-    }
-
-    // MARK: Dependencies
-
-    var sessionStore: SSKSessionStore {
-        return SSKEnvironment.shared.sessionStore
-    }
-
-    var messageSender: MessageSender {
-        return SSKEnvironment.shared.messageSender
-    }
-
-    var databaseStorage: SDSDatabaseStorage {
-        return SDSDatabaseStorage.shared
     }
 
     // MARK: 

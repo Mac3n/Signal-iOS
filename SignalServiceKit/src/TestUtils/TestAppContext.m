@@ -1,5 +1,5 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 #import "TestAppContext.h"
@@ -60,6 +60,11 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)isMainAppAndActive
 {
     return YES;
+}
+
+- (BOOL)isNSE
+{
+    return NO;
 }
 
 - (UIApplicationState)mainApplicationStateOnLaunch
@@ -200,6 +205,11 @@ NS_ASSUME_NONNULL_BEGIN
 }
 
 - (BOOL)didLastLaunchNotTerminate
+{
+    return NO;
+}
+
+- (BOOL)hasActiveCall
 {
     return NO;
 }

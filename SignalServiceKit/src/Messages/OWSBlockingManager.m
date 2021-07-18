@@ -1,21 +1,21 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 #import "OWSBlockingManager.h"
-#import "AppContext.h"
-#import "AppReadiness.h"
-#import "MessageSender.h"
 #import "NSNotificationCenter+OWS.h"
-#import "OWSBlockedPhoneNumbersMessage.h"
-#import "SSKEnvironment.h"
-#import "TSContactThread.h"
-#import "TSGroupThread.h"
+#import <SignalServiceKit/AppContext.h>
+#import <SignalServiceKit/AppReadiness.h>
+#import <SignalServiceKit/MessageSender.h>
+#import <SignalServiceKit/OWSBlockedPhoneNumbersMessage.h>
+#import <SignalServiceKit/SSKEnvironment.h>
 #import <SignalServiceKit/SignalServiceKit-Swift.h>
+#import <SignalServiceKit/TSContactThread.h>
+#import <SignalServiceKit/TSGroupThread.h>
 
 NS_ASSUME_NONNULL_BEGIN
 
-NSNotificationName const kNSNotificationName_BlockListDidChange = @"kNSNotificationName_BlockListDidChange";
+NSNotificationName const kNSNotificationNameBlockListDidChange = @"kNSNotificationNameBlockListDidChange";
 NSNotificationName const OWSBlockingManagerBlockedSyncDidComplete = @"OWSBlockingManagerBlockedSyncDidComplete";
 
 // These keys are used to persist the current local "block list" state.
@@ -43,38 +43,10 @@ NSString *const kOWSBlockingManager_SyncedBlockedGroupIdsKey = @"kOWSBlockingMan
 
 @implementation OWSBlockingManager
 
-#pragma mark - Dependencies
-
-- (SDSDatabaseStorage *)databaseStorage
-{
-    return SDSDatabaseStorage.shared;
-}
-
-- (id<StorageServiceManagerProtocol>)storageServiceManager
-{
-    return SSKEnvironment.shared.storageServiceManager;
-}
-
-- (id<GroupsV2>)groupsV2
-{
-    return SSKEnvironment.shared.groupsV2;
-}
-
-#pragma mark -
-
 + (SDSKeyValueStore *)keyValueStore
 {
     NSString *const kOWSBlockingManager_BlockListCollection = @"kOWSBlockingManager_BlockedPhoneNumbersCollection";
     return [[SDSKeyValueStore alloc] initWithCollection:kOWSBlockingManager_BlockListCollection];
-}
-
-#pragma mark -
-
-+ (instancetype)shared
-{
-    OWSAssertDebug(SSKEnvironment.shared.blockingManager);
-
-    return SSKEnvironment.shared.blockingManager;
 }
 
 - (instancetype)init
@@ -86,10 +58,8 @@ NSString *const kOWSBlockingManager_SyncedBlockedGroupIdsKey = @"kOWSBlockingMan
     }
 
     OWSSingletonAssert();
-    
-    [AppReadiness runNowOrWhenAppWillBecomeReady:^{
-        [self ensureLazyInitializationOnLaunch];
-    }];
+
+    AppReadinessRunNowOrWhenAppWillBecomeReady(^{ [self ensureLazyInitializationOnLaunch]; });
 
     return self;
 }
@@ -168,7 +138,7 @@ NSString *const kOWSBlockingManager_SyncedBlockedGroupIdsKey = @"kOWSBlockingMan
     return blockedAddresses;
 }
 
-- (BOOL)addBlockedAddressLocally:(SignalServiceAddress *)address blockMode:(BlockMode)blockMode;
+- (BOOL)addBlockedAddressLocally:(SignalServiceAddress *)address blockMode:(BlockMode)blockMode
 {
     OWSAssertDebug(address.isValid);
 
@@ -200,7 +170,7 @@ NSString *const kOWSBlockingManager_SyncedBlockedGroupIdsKey = @"kOWSBlockingMan
     return didChange;
 }
 
-- (void)addBlockedAddress:(SignalServiceAddress *)address blockMode:(BlockMode)blockMode;
+- (void)addBlockedAddress:(SignalServiceAddress *)address blockMode:(BlockMode)blockMode
 {
     if ([self addBlockedAddressLocally:address blockMode:blockMode]) {
         BOOL wasLocallyInitiated = [self wasLocallyInitiatedWithBlockMode:blockMode];
@@ -279,7 +249,7 @@ NSString *const kOWSBlockingManager_SyncedBlockedGroupIdsKey = @"kOWSBlockingMan
 
     OWSLogInfo(@"");
 
-    [transaction addAsyncCompletion:^{
+    [transaction addAsyncCompletionOnMain:^{
         [[NSNotificationCenter defaultCenter] postNotificationName:OWSBlockingManagerBlockedSyncDidComplete object:nil];
     }];
 
@@ -668,7 +638,7 @@ NSString *const kOWSBlockingManager_SyncedBlockedGroupIdsKey = @"kOWSBlockingMan
             [self saveSyncedBlockListWithPhoneNumbers:blockedPhoneNumbers uuids:blockedUUIDs groupIds:blockedGroupIds];
         }
 
-        [[NSNotificationCenter defaultCenter] postNotificationNameAsync:kNSNotificationName_BlockListDidChange
+        [[NSNotificationCenter defaultCenter] postNotificationNameAsync:kNSNotificationNameBlockListDidChange
                                                                  object:nil
                                                                userInfo:nil];
     });
@@ -710,6 +680,17 @@ NSString *const kOWSBlockingManager_SyncedBlockedGroupIdsKey = @"kOWSBlockingMan
     _blockedUUIDSet = [[NSMutableSet alloc] initWithArray:(blockedUUIDs ?: @[])];
 
     if ([storedBlockedGroupMap isKindOfClass:[NSDictionary class]]) {
+        if (!CurrentAppContext().hasUI) {
+            for (NSData *groupId in _blockedGroupMap.allKeys) {
+                TSGroupModel *_Nullable groupModel = _blockedGroupMap[groupId];
+                if (![groupModel isKindOfClass:[TSGroupModel class]]) {
+                    OWSFailDebug(@"Missing or invalid group model.");
+                    continue;
+                }
+                // Reduce memory usage by discarding group avatars.
+                [groupModel discardGroupAvatarForBlockingManager];
+            }
+        }
         _blockedGroupMap = [storedBlockedGroupMap mutableCopy];
     } else {
         _blockedGroupMap = [NSMutableDictionary new];
@@ -834,12 +815,12 @@ NSString *const kOWSBlockingManager_SyncedBlockedGroupIdsKey = @"kOWSBlockingMan
 {
     OWSAssertIsOnMainThread();
 
-    [AppReadiness runNowOrWhenAppDidBecomeReadyPolite:^{
+    AppReadinessRunNowOrWhenMainAppDidBecomeReadyAsync(^{
         @synchronized(self)
         {
             [self syncBlockListIfNecessary];
         }
-    }];
+    });
 }
 
 @end

@@ -1,11 +1,12 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 #import "OWSSounds.h"
 #import "Environment.h"
 #import "OWSAudioPlayer.h"
 #import <SignalCoreKit/Cryptography.h>
+#import <SignalCoreKit/SignalCoreKit-Swift.h>
 #import <SignalMessaging/SignalMessaging-Swift.h>
 #import <SignalServiceKit/OWSFileSystem.h>
 #import <SignalServiceKit/SignalServiceKit-Swift.h>
@@ -71,27 +72,6 @@ const NSUInteger OWSCustomSoundShift = 16;
 
 @implementation OWSSounds
 
-#pragma mark - Dependencies
-
-+ (SDSDatabaseStorage *)databaseStorage
-{
-    return SDSDatabaseStorage.shared;
-}
-
-- (SDSDatabaseStorage *)databaseStorage
-{
-    return SDSDatabaseStorage.shared;
-}
-
-#pragma mark -
-
-+ (instancetype)shared
-{
-    OWSAssertDebug(Environment.shared.sounds);
-
-    return Environment.shared.sounds;
-}
-
 - (instancetype)init
 {
     self = [super init];
@@ -101,17 +81,60 @@ const NSUInteger OWSCustomSoundShift = 16;
     }
 
     // Don't store too many sounds in memory. Most users will only use 1 or 2 sounds anyway.
-    _cachedSystemSounds = [[AnyLRUCache alloc] initWithMaxSize:4];
+    _cachedSystemSounds = [[AnyLRUCache alloc] initWithMaxSize:4
+                                                    nseMaxSize:0
+                                    shouldEvacuateInBackground:NO];
 
     OWSSingletonAssert();
 
-    [AppReadiness runNowOrWhenAppDidBecomeReadyPolite:^{ [OWSSounds cleanupOrphanedSounds]; }];
+    AppReadinessRunNowOrWhenMainAppDidBecomeReadyAsync(^{
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            [OWSSounds migrateLegacySounds];
+            [OWSSounds cleanupOrphanedSounds];
+        });
+    });
 
     return self;
 }
 
++ (void)migrateLegacySounds
+{
+    OWSAssertDebug(CurrentAppContext().isMainApp);
+
+    NSString *legacySoundsDirectory =
+        [[OWSFileSystem appLibraryDirectoryPath] stringByAppendingPathComponent:@"Sounds"];
+    if (![OWSFileSystem fileOrFolderExistsAtPath:legacySoundsDirectory]) {
+        return;
+    }
+
+    NSError *error;
+    NSArray *legacySoundFiles = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:legacySoundsDirectory
+                                                                                    error:&error];
+    if (error) {
+        OWSFailDebug(@"Failed looking up legacy sound files: %@", error.localizedDescription);
+        return;
+    }
+
+    for (NSString *soundFile in legacySoundFiles) {
+        NSError *moveError;
+        [[NSFileManager defaultManager] moveItemAtPath:[legacySoundsDirectory stringByAppendingPathComponent:soundFile]
+                                                toPath:[[self soundsDirectory] stringByAppendingPathComponent:soundFile]
+                                                 error:&moveError];
+        if (moveError) {
+            OWSFailDebug(@"Failed to migrate legacy sound file: %@", moveError.localizedDescription);
+            continue;
+        }
+    }
+
+    if (![OWSFileSystem deleteFile:legacySoundsDirectory]) {
+        OWSFailDebug(@"Failed to delete legacy sounds directory");
+    }
+}
+
 + (void)cleanupOrphanedSounds
 {
+    OWSAssertDebug(CurrentAppContext().isMainApp);
+
     NSSet<NSNumber *> *allCustomSounds = [NSSet setWithArray:[self allCustomNotificationSounds]];
     if (allCustomSounds.count == 0) {
         return;
@@ -234,6 +257,12 @@ const NSUInteger OWSCustomSoundShift = 16;
                 @"Label for the 'no sound' option that allows users to disable sounds for notifications, "
                 @"etc.");
 
+        // Audio Playback
+        case OWSStandardSound_BeginNextTrack:
+            return @"Begin Next Track";
+        case OWSStandardSound_EndLastTrack:
+            return @"End Last Track";
+
         // Custom Sounds
         default:
             return [OWSSounds displayNameForCustomSound:sound];
@@ -303,6 +332,12 @@ const NSUInteger OWSCustomSoundShift = 16;
             return @"group_call_join.aiff";
         case OWSStandardSound_GroupCallLeave:
             return @"group_call_leave.aiff";
+
+        // Audio Playback
+        case OWSStandardSound_BeginNextTrack:
+            return @"state-change_confirm-down.caf";
+        case OWSStandardSound_EndLastTrack:
+            return @"state-change_confirm-up.caf";
 
             // Other
         case OWSStandardSound_None:
@@ -561,7 +596,7 @@ const NSUInteger OWSCustomSoundShift = 16;
 
 + (NSString *)soundsDirectory
 {
-    NSString *directory = [[OWSFileSystem appLibraryDirectoryPath] stringByAppendingPathComponent:@"Sounds"];
+    NSString *directory = [[OWSFileSystem appSharedDataDirectoryPath] stringByAppendingPathComponent:@"Library/Sounds"];
     [OWSFileSystem ensureDirectoryExists:directory];
     return directory;
 }

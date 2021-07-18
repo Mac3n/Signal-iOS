@@ -1,5 +1,5 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 import Foundation
@@ -126,7 +126,11 @@ public class ContactDiscoveryTask: NSObject {
         guard let database = database else {
             // Just return a set of in-memory SignalRecipients built from discoveredAddresses
             owsAssertDebug(CurrentAppContext().isRunningTests)
+            #if TESTABLE_BUILD
             return Set(discoveredAddresses.map { SignalRecipient(address: $0) })
+            #else
+            return Set()
+            #endif
         }
 
         return database.write { tx in
@@ -171,7 +175,8 @@ public extension ContactDiscoveryTask {
 public extension ContactDiscoveryTask {
 
     private static let unfairLock = UnfairLock()
-    private static let undiscoverableUserCache = NSCache<NSString, NSDate>()
+    @nonobjc
+    private static let undiscoverableUserCache = LRUCache<String, Date>(maxSize: 1024)
 
     fileprivate static func markUsersAsRecentlyKnownToBeUndiscoverable(_ addresses: [SignalServiceAddress]) {
         guard !addresses.isEmpty else {
@@ -179,7 +184,7 @@ public extension ContactDiscoveryTask {
         }
         Logger.verbose("Marking users as known to be undiscoverable: \(addresses.count)")
 
-        let markAsUndiscoverableDate = Date() as NSDate
+        let markAsUndiscoverableDate = Date()
         unfairLock.withLock {
             for address in addresses {
                 guard let phoneNumber = address.phoneNumber else {
@@ -191,7 +196,7 @@ public extension ContactDiscoveryTask {
                     owsFailDebug("address unexpectedly had UUID")
                     continue
                 }
-                Self.undiscoverableUserCache.setObject(markAsUndiscoverableDate, forKey: phoneNumber as NSString)
+                Self.undiscoverableUserCache.setObject(markAsUndiscoverableDate, forKey: phoneNumber)
             }
         }
     }
@@ -217,7 +222,7 @@ public extension ContactDiscoveryTask {
                     owsFailDebug("address unexpectedly had UUID")
                     return false
                 }
-                guard let markAsUndiscoverableDate = Self.undiscoverableUserCache.object(forKey: phoneNumber as NSString) else {
+                guard let markAsUndiscoverableDate = Self.undiscoverableUserCache.object(forKey: phoneNumber) else {
                     // Not marked as undiscoverable.
                     return false
                 }

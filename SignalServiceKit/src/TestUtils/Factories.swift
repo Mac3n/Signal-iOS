@@ -1,5 +1,5 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 import Foundation
@@ -31,11 +31,8 @@ import Foundation
 ///     messageFactory.threadCreator = { _ in return existingThread }
 ///     messageFactory.create(count: 100)
 ///
-public protocol Factory {
+public protocol Factory: Dependencies {
     associatedtype ObjectType: TSYapDatabaseObject
-
-    static var databaseStorage: SDSDatabaseStorage { get }
-    var databaseStorage: SDSDatabaseStorage { get }
 
     static func write(block: @escaping (SDSAnyWriteTransaction) -> Void)
     func write(block: @escaping (SDSAnyWriteTransaction) -> Void)
@@ -49,14 +46,6 @@ public protocol Factory {
 }
 
 public extension Factory {
-
-    static var databaseStorage: SDSDatabaseStorage {
-        return SDSDatabaseStorage.shared
-    }
-
-    var databaseStorage: SDSDatabaseStorage {
-        return SDSDatabaseStorage.shared
-    }
 
     static func write(block: @escaping (SDSAnyWriteTransaction) -> Void) {
         databaseStorage.write(block: block)
@@ -295,6 +284,7 @@ public class IncomingMessageFactory: NSObject, Factory {
                                                        messageSticker: messageStickerBuilder(),
                                                        serverTimestamp: serverTimestampBuilder(),
                                                        serverDeliveryTimestamp: serverDeliveryTimestampBuilder(),
+                                                       serverGuid: serverGuidBuilder(),
                                                        wasReceivedByUD: wasReceivedByUDBuilder(),
                                                        isViewOnceMessage: isViewOnceMessageBuilder())
         let item = builder.build()
@@ -386,6 +376,11 @@ public class IncomingMessageFactory: NSObject, Factory {
     }
 
     @objc
+    public var serverGuidBuilder: () -> String? = {
+        return nil
+    }
+
+    @objc
     public var wasReceivedByUDBuilder: () -> Bool = {
         return false
     }
@@ -455,10 +450,6 @@ public class GroupThreadFactory: NSObject, Factory {
 @objc
 public class ConversationFactory: NSObject {
 
-    var databaseStorage: SDSDatabaseStorage {
-        return SDSDatabaseStorage.shared
-    }
-
     @objc
     public var attachmentCount: Int = 0
 
@@ -507,7 +498,8 @@ public class ConversationFactory: NSObject {
                                       sourceFilename: nil,
                                       caption: caption,
                                       albumMessageId: outgoingMessage.uniqueId,
-                                      isBorderless: false)
+                                      isBorderless: false,
+                                      isLoopingVideo: false)
     }
 
 }
@@ -618,8 +610,7 @@ public class ContactFactory {
                        userTextPhoneNumbers: userTextPhoneNumbers,
                        phoneNumberNameMap: phoneNumberNameMap,
                        parsedPhoneNumbers: parsedPhoneNumbers,
-                       emails: emailsBuilder(),
-                       imageDataToHash: imageDataToHashBuilder())
+                       emails: emailsBuilder())
     }
 
     public var localClientPhonenumber: String = "+13235551234"
@@ -654,10 +645,6 @@ public class ContactFactory {
 
     public var emailsBuilder: () -> [String] = {
         return [CommonGenerator.email()]
-    }
-
-    public var imageDataToHashBuilder: () -> Data? = {
-        return nil
     }
 }
 

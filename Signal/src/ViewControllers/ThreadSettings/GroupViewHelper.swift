@@ -1,12 +1,12 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 import Foundation
 import PromiseKit
 
 @objc
-protocol GroupViewHelperDelegate: class {
+protocol GroupViewHelperDelegate: AnyObject {
     func groupViewHelperDidUpdateGroup()
 
     var currentGroupModel: TSGroupModel? { get }
@@ -18,22 +18,6 @@ protocol GroupViewHelperDelegate: class {
 
 @objc
 class GroupViewHelper: NSObject {
-
-    // MARK: - Dependencies
-
-    var tsAccountManager: TSAccountManager {
-        return .shared()
-    }
-
-    var contactsManager: OWSContactsManager {
-        return Environment.shared.contactsManager
-    }
-
-    var blockingManager: OWSBlockingManager {
-        return .shared()
-    }
-
-    // MARK: -
 
     @objc
     weak var delegate: GroupViewHelperDelegate?

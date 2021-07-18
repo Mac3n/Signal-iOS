@@ -1,11 +1,11 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 import Foundation
 
 @objc
-public protocol CallViewControllerWindowReference: class {
+public protocol CallViewControllerWindowReference: AnyObject {
     var localVideoViewReference: UIView { get }
     var remoteVideoViewReference: UIView { get }
     var remoteVideoAddress: SignalServiceAddress { get }
@@ -53,20 +53,14 @@ public class ReturnToCallViewController: UIViewController {
         callViewController.localVideoViewReference.layer.cornerRadius = 6
         updateLocalVideoFrame()
 
-        let (profileImage, conversationColorName) = databaseStorage.uiRead { transaction in
-            return (
-                self.profileManager.profileAvatar(for: callViewController.remoteVideoAddress, transaction: transaction),
-                self.contactsManager.conversationColorName(for: callViewController.remoteVideoAddress, transaction: transaction)
-            )
+        let profileImage = databaseStorage.read { transaction -> UIImage? in
+            avatarView.configure(address: callViewController.remoteVideoAddress, transaction: transaction)
+
+            return self.profileManagerImpl.profileAvatar(for: callViewController.remoteVideoAddress,
+                                                         transaction: transaction)
         }
 
         backgroundAvatarView.image = profileImage
-
-        avatarView.image = OWSContactAvatarBuilder(
-            address: callViewController.remoteVideoAddress,
-            colorName: conversationColorName,
-            diameter: 60
-        ).build()
 
         animatePipPresentation(snapshot: callViewSnapshot)
     }
@@ -78,7 +72,8 @@ public class ReturnToCallViewController: UIViewController {
         callViewController = nil
     }
 
-    private lazy var avatarView = AvatarImageView()
+    private lazy var avatarView = ConversationAvatarView(diameterPoints: 60,
+                                                         localUserDisplayMode: .asUser)
     private lazy var backgroundAvatarView = UIImageView()
     private lazy var blurView = UIVisualEffectView(effect: UIBlurEffect(style: .dark))
 
@@ -97,7 +92,6 @@ public class ReturnToCallViewController: UIViewController {
         blurView.autoPinEdgesToSuperviewEdges()
 
         view.addSubview(avatarView)
-        avatarView.autoSetDimensions(to: CGSize(square: 60))
         avatarView.autoCenterInSuperview()
 
         view.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(handleTap)))

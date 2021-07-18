@@ -1,22 +1,23 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
-#import "TSPreKeyManager.h"
-#import "AppContext.h"
 #import "NSURLSessionDataTask+OWS_HTTP.h"
-#import "OWSIdentityManager.h"
-#import "SSKEnvironment.h"
-#import "SSKSignedPreKeyStore.h"
-#import "TSNetworkManager.h"
 #import <SignalCoreKit/NSDate+OWS.h>
+#import <SignalServiceKit/AppContext.h>
+#import <SignalServiceKit/OWSIdentityManager.h>
+#import <SignalServiceKit/SSKEnvironment.h>
 #import <SignalServiceKit/SSKPreKeyStore.h>
+#import <SignalServiceKit/SSKSignedPreKeyStore.h>
 #import <SignalServiceKit/SignalServiceKit-Swift.h>
+#import <SignalServiceKit/SignedPreKeyRecord.h>
+#import <SignalServiceKit/TSNetworkManager.h>
+#import <SignalServiceKit/TSPreKeyManager.h>
 
 NS_ASSUME_NONNULL_BEGIN
 
 // Time before deletion of signed prekeys (measured in seconds)
-#define kSignedPreKeysDeletionTime (7 * kDayInterval)
+#define kSignedPreKeysDeletionTime (30 * kDayInterval)
 
 // Time before rotation of signed prekeys (measured in seconds)
 #define kSignedPreKeyRotationTime (2 * kDayInterval)
@@ -43,30 +44,6 @@ static const NSUInteger kMaxPrekeyUpdateFailureCount = 5;
 #pragma mark -
 
 @implementation TSPreKeyManager
-
-#pragma mark - Dependencies
-
-+ (TSAccountManager *)tsAccountManager
-{
-    OWSAssertDebug(SSKEnvironment.shared.tsAccountManager);
-    
-    return SSKEnvironment.shared.tsAccountManager;
-}
-
-+ (SSKSignedPreKeyStore *)signedPreKeyStore
-{
-    return SSKEnvironment.shared.signedPreKeyStore;
-}
-
-+ (SSKPreKeyStore *)preKeyStore
-{
-    return SSKEnvironment.shared.preKeyStore;
-}
-
-+ (SDSDatabaseStorage *)databaseStorage
-{
-    return SDSDatabaseStorage.shared;
-}
 
 + (instancetype)shared
 {

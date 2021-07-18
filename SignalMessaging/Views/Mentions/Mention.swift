@@ -1,5 +1,5 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 import Foundation
@@ -32,13 +32,13 @@ public class Mention: NSObject {
     public var length: Int { (text as NSString).length }
 
     public class func withSneakyTransaction(address: SignalServiceAddress, style: Style) -> Mention {
-        return SDSDatabaseStorage.shared.uiRead { transaction in
-            return Mention(address: address, style: style, transaction: transaction.unwrapGrdbRead)
+        databaseStorage.read { transaction in
+            Mention(address: address, style: style, transaction: transaction.unwrapGrdbRead)
         }
     }
 
     public convenience init(address: SignalServiceAddress, style: Style, transaction: GRDBReadTransaction) {
-        let displayName = Environment.shared.contactsManager.displayName(
+        let displayName = Self.contactsManager.displayName(
             for: address,
             transaction: transaction.asAnyRead
         )
@@ -68,7 +68,7 @@ public class Mention: NSObject {
             attributes[.backgroundColor] = Theme.isDarkThemeEnabled ? UIColor.ows_gray60 : UIColor.ows_gray20
             attributes[.foregroundColor] = ConversationStyle.bubbleTextColorIncoming
         case .outgoing:
-            attributes[.backgroundColor] = UIColor.ows_signalBlueDark
+            attributes[.backgroundColor] = UIColor(white: 0, alpha: 0.25)
             attributes[.foregroundColor] = ConversationStyle.bubbleTextColorOutgoing
         case .composingAttachment:
             attributes[.backgroundColor] = UIColor.ows_gray75
@@ -145,6 +145,17 @@ extension MessageBody {
         self.init(text: mutableAttributedString.string, ranges: .init(mentions: mentions))
     }
 
+    public func textValue(style: Mention.Style,
+                          attributes: [NSAttributedString.Key: Any],
+                          shouldResolveAddress: (SignalServiceAddress) -> Bool,
+                          transaction: GRDBReadTransaction) -> CVTextValue {
+        ranges.textValue(text: text,
+                         style: style,
+                         attributes: attributes,
+                         shouldResolveAddress: shouldResolveAddress,
+                         transaction: transaction)
+    }
+
     @objc
     public func attributedBody(
         style: Mention.Style,
@@ -163,6 +174,24 @@ extension MessageBody {
 }
 
 extension MessageBodyRanges {
+
+    public func textValue(text: String,
+                          style: Mention.Style,
+                          attributes: [NSAttributedString.Key: Any],
+                          shouldResolveAddress: (SignalServiceAddress) -> Bool,
+                          transaction: GRDBReadTransaction) -> CVTextValue {
+
+        guard hasMentions || !attributes.isEmpty else {
+            return .text(text: text)
+        }
+        let attributedText = attributedBody(text: text,
+                                            style: style,
+                                            attributes: attributes,
+                                            shouldResolveAddress: shouldResolveAddress,
+                                            transaction: transaction)
+        return .attributedText(attributedText: attributedText)
+    }
+
     @objc
     public func attributedBody(
         text: String,

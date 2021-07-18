@@ -1,5 +1,5 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 #import "FingerprintViewController.h"
@@ -16,7 +16,6 @@
 #import <SignalServiceKit/OWSFingerprint.h>
 #import <SignalServiceKit/OWSFingerprintBuilder.h>
 #import <SignalServiceKit/OWSIdentityManager.h>
-#import <SignalServiceKit/SSKSessionStore.h>
 #import <SignalServiceKit/TSAccountManager.h>
 #import <SignalServiceKit/TSInfoMessage.h>
 
@@ -398,17 +397,14 @@ typedef void (^CustomLayoutBlock)(void);
 
         NSMutableAttributedString *buttonText = [NSMutableAttributedString new];
         // Show a "checkmark" if this user is not verified.
-        [buttonText
-            appendAttributedString:[[NSAttributedString alloc]
-                                       initWithString:LocalizationNotNeeded(@"\uf00c  ")
+        [buttonText append:LocalizationNotNeeded(@"\uf00c  ")
                                            attributes:@{
                                                NSFontAttributeName : [UIFont
                                                    ows_fontAwesomeFont:self.verifyUnverifyButtonLabel.font.pointSize],
-                                           }]];
-        [buttonText appendAttributedString:
-                        [[NSAttributedString alloc]
-                            initWithString:NSLocalizedString(@"PRIVACY_VERIFY_BUTTON",
-                                               @"Button that lets user mark another user's identity as verified.")]];
+                                           }];
+        [buttonText append:NSLocalizedString(@"PRIVACY_VERIFY_BUTTON",
+                                               @"Button that lets user mark another user's identity as verified.")
+                attributes:@{}];
         self.verifyUnverifyButtonLabel.attributedText = buttonText;
     }
 

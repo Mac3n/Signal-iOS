@@ -1,5 +1,5 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 import Foundation
@@ -22,27 +22,6 @@ public class KeyBackupService: NSObject {
             let normalizedPin = KeyBackupService.normalizePin(pin)
             self = normalizedPin.digitsOnly() == normalizedPin ? .numeric : .alphanumeric
         }
-    }
-
-    // PRAGMA MARK: - Depdendencies
-    static var networkManager: TSNetworkManager {
-        return TSNetworkManager.shared()
-    }
-
-    static var databaseStorage: SDSDatabaseStorage {
-        return .shared
-    }
-
-    static var tsAccountManager: TSAccountManager {
-        return .shared()
-    }
-
-    static var storageServiceManager: StorageServiceManagerProtocol {
-        return SSKEnvironment.shared.storageServiceManager
-    }
-
-    static var syncManager: SyncManagerProtocol {
-        return SSKEnvironment.shared.syncManager
     }
 
     // PRAGMA MARK: - Pin Management
@@ -366,7 +345,7 @@ public class KeyBackupService: NSObject {
     }
 
     @objc(deleteKeys)
-    static func objc_deleteKeys() -> AnyPromise {
+    public static func objc_deleteKeys() -> AnyPromise {
         return AnyPromise(deleteKeys())
     }
 
@@ -439,7 +418,7 @@ public class KeyBackupService: NSObject {
                 return nil
             }
 
-            return Cryptography.computeSHA256HMAC(data, withHMACKey: dataToDeriveFrom)
+            return Cryptography.computeSHA256HMAC(data, key: dataToDeriveFrom)
         }
 
         public var isAvailable: Bool { return data != nil }
@@ -482,7 +461,7 @@ public class KeyBackupService: NSObject {
     }
 
     @objc
-    static func deriveRegistrationLockToken() -> String? {
+    public static func deriveRegistrationLockToken() -> String? {
         return DerivedKey.registrationLock.data?.hexadecimalString
     }
 
@@ -680,9 +659,13 @@ public class KeyBackupService: NSObject {
         guard state.enclaveName != currentEnclave.name,
             state.masterKey != nil,
             tsAccountManager.isRegisteredAndReady else { return }
-
-        guard let pin = OWS2FAManager.shared().pinCode else {
-            return owsFailDebug("Can't migrate KBS enclave because local pin is missing")
+        guard state.isMasterKeyBackedUp else {
+            Logger.warn("Can't migrate KBS enclave because pins are not enabled.")
+            return
+        }
+        guard let pin = OWS2FAManager.shared.pinCode else {
+            owsFailDebug("Can't migrate KBS enclave because local pin is missing")
+            return
         }
 
         Logger.info("Migrating from KBS enclave \(String(describing: state.enclaveName)) to \(currentEnclave.name)")
@@ -740,6 +723,8 @@ public class KeyBackupService: NSObject {
         enclaveName: String,
         transaction: SDSAnyWriteTransaction
     ) {
+        owsAssertDebug(tsAccountManager.isPrimaryDevice)
+
         let previousState = getOrLoadState(transaction: transaction)
 
         guard masterKey != previousState.masterKey
@@ -856,7 +841,7 @@ public class KeyBackupService: NSObject {
             transaction: transaction
         )
 
-        OWS2FAManager.shared().markDisabled(transaction: transaction)
+        OWS2FAManager.shared.markDisabled(transaction: transaction)
     }
 
     // PRAGMA MARK: - Requests

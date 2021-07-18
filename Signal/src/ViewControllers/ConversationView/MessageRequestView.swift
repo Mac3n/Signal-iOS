@@ -1,11 +1,10 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 import UIKit
 
-@objc
-protocol MessageRequestDelegate: class {
+protocol MessageRequestDelegate: AnyObject {
     func messageRequestViewDidTapBlock(mode: MessageRequestMode)
     func messageRequestViewDidTapDelete()
     func messageRequestViewDidTapAccept(mode: MessageRequestMode)
@@ -53,14 +52,12 @@ class MessageRequestView: UIStackView {
         messageRequestType.hasSentMessages
     }
 
-    @objc
     weak var delegate: MessageRequestDelegate?
 
-    @objc
     init(threadViewModel: ThreadViewModel) {
         let thread = threadViewModel.threadRecord
         self.thread = thread
-        self.messageRequestType = Self.databaseStorage.uiRead { transaction in
+        self.messageRequestType = Self.databaseStorage.read { transaction in
             Self.messageRequestType(forThread: thread, transaction: transaction)
         }
 
@@ -108,7 +105,7 @@ class MessageRequestView: UIStackView {
                                           transaction: SDSAnyReadTransaction) -> MessageRequestType {
         let isGroupV1Thread = thread.isGroupV1Thread
         let isGroupV2Thread = thread.isGroupV2Thread
-        let isThreadBlocked = OWSBlockingManager.shared().isThreadBlocked(thread)
+        let isThreadBlocked = blockingManager.isThreadBlocked(thread)
         let hasSentMessages = InteractionFinder(threadUniqueId: thread.uniqueId).existsOutgoingMessage(transaction: transaction)
         return MessageRequestType(isGroupV1Thread: isGroupV1Thread,
                                   isGroupV2Thread: isGroupV2Thread,
@@ -198,7 +195,7 @@ class MessageRequestView: UIStackView {
                 )
             }
 
-            let shortName = databaseStorage.uiRead { transaction in
+            let shortName = databaseStorage.read { transaction in
                 return self.contactsManager.shortDisplayName(for: thread.contactAddress, transaction: transaction)
             }
 

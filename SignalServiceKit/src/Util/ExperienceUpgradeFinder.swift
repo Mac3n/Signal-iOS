@@ -1,12 +1,12 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 import Foundation
 import PromiseKit
 import Contacts
 
-public enum ExperienceUpgradeId: String, CaseIterable {
+public enum ExperienceUpgradeId: String, CaseIterable, Dependencies {
     case introducingPins = "009"
     case pinReminder // Never saved, used to periodically prompt the user for their PIN
     case notificationPermissionReminder
@@ -15,6 +15,9 @@ public enum ExperienceUpgradeId: String, CaseIterable {
     case researchMegaphone1
     case groupsV2AndMentionsSplash2
     case groupCallsMegaphone
+    case sharingSuggestions
+    case donateMegaphone
+    case chatColors
 
     // Until this flag is true the upgrade won't display to users.
     func hasLaunched(transaction: GRDBReadTransaction) -> Bool {
@@ -24,10 +27,10 @@ public enum ExperienceUpgradeId: String, CaseIterable {
         case .introducingPins:
             // The PIN setup flow requires an internet connection and you to not already have a PIN
             return RemoteConfig.kbs &&
-                SSKEnvironment.shared.reachabilityManager.isReachable &&
+                Self.reachabilityManager.isReachable &&
                 !KeyBackupService.hasMasterKey(transaction: transaction.asAnyRead)
         case .pinReminder:
-            return OWS2FAManager.shared().isDueForV2Reminder(transaction: transaction.asAnyRead)
+            return OWS2FAManager.shared.isDueForV2Reminder(transaction: transaction.asAnyRead)
         case .notificationPermissionReminder:
             let (promise, resolver) = Promise<Bool>.pending()
 
@@ -48,7 +51,7 @@ public enum ExperienceUpgradeId: String, CaseIterable {
             do {
                 return !(try promise.wait())
             } catch {
-                owsFailDebug("failed to query notification permission")
+                Logger.warn("failed to query notification permission")
                 return false
             }
         case .contactPermissionReminder:
@@ -61,6 +64,12 @@ public enum ExperienceUpgradeId: String, CaseIterable {
             return FeatureFlags.groupsV2showSplash
         case .groupCallsMegaphone:
             return RemoteConfig.groupCalling
+        case .sharingSuggestions:
+            return true
+        case .donateMegaphone:
+            return RemoteConfig.donateMegaphone
+        case .chatColors:
+            return true
         }
     }
 
@@ -81,7 +90,8 @@ public enum ExperienceUpgradeId: String, CaseIterable {
     var skipForNewUsers: Bool {
         switch self {
         case .introducingPins,
-             .researchMegaphone1:
+             .researchMegaphone1,
+             .donateMegaphone:
             return false
         default:
             return true
@@ -115,6 +125,12 @@ public enum ExperienceUpgradeId: String, CaseIterable {
             return .medium
         case .groupCallsMegaphone:
             return .medium
+        case .sharingSuggestions:
+            return .medium
+        case .donateMegaphone:
+            return .low
+        case .chatColors:
+            return .low
         }
     }
 
@@ -139,6 +155,8 @@ public enum ExperienceUpgradeId: String, CaseIterable {
             return false
         case .contactPermissionReminder:
             return false
+        case .donateMegaphone:
+            return false
         default:
             return true
         }
@@ -150,6 +168,8 @@ public enum ExperienceUpgradeId: String, CaseIterable {
             return kDayInterval * 30
         case .contactPermissionReminder:
             return kDayInterval * 30
+        case .donateMegaphone:
+            return RemoteConfig.donateMegaphoneSnoozeInterval
         default:
             return kDayInterval * 2
         }
@@ -161,21 +181,12 @@ public enum ExperienceUpgradeId: String, CaseIterable {
             return true
         case .contactPermissionReminder:
             return true
+        case .sharingSuggestions:
+            return true
+        case .donateMegaphone:
+            return true
         default:
             return false
-        }
-    }
-
-    var objcRepresentation: ObjcExperienceUpgradeId {
-        switch self {
-        case .introducingPins:                  return .introducingPins
-        case .pinReminder:                      return .pinReminder
-        case .notificationPermissionReminder:   return .notificationPermissionReminder
-        case .contactPermissionReminder:        return .contactPermissionReminder
-        case .linkPreviews:                     return .linkPreviews
-        case .researchMegaphone1:               return .researchMegaphone1
-        case .groupsV2AndMentionsSplash2:       return .groupsV2AndMentionsSplash2
-        case .groupCallsMegaphone:              return .groupCallsMegaphone
         }
     }
 }
@@ -204,6 +215,14 @@ public class ExperienceUpgradeFinder: NSObject {
             guard experienceUpgrade.firstViewedTimestamp == 0 else { return }
             experienceUpgrade.firstViewedTimestamp = Date().timeIntervalSince1970
         }
+    }
+
+    public class func hasUnsnoozed(experienceUpgradeId: ExperienceUpgradeId, transaction: GRDBReadTransaction) -> Bool {
+        return allIncomplete(transaction: transaction).first { experienceUpgradeId.rawValue == $0.uniqueId }?.isSnoozed == false
+    }
+
+    public class func markAsSnoozed(experienceUpgradeId: ExperienceUpgradeId, transaction: GRDBWriteTransaction) {
+        markAsSnoozed(experienceUpgrade: ExperienceUpgrade(uniqueId: experienceUpgradeId.rawValue), transaction: transaction)
     }
 
     public class func markAsSnoozed(experienceUpgrade: ExperienceUpgrade, transaction: GRDBWriteTransaction) {
@@ -238,7 +257,7 @@ public class ExperienceUpgradeFinder: NSObject {
     /// yet to be completed. Sorted by priority from highest to lowest. For equal
     /// priority upgrades follows the order of the `ExperienceUpgradeId` enumeration
     private class func allActiveExperienceUpgrades(transaction: GRDBReadTransaction) -> [ExperienceUpgrade] {
-        let isPrimaryDevice = SSKEnvironment.shared.tsAccountManager.isRegisteredPrimaryDevice
+        let isPrimaryDevice = Self.tsAccountManager.isRegisteredPrimaryDevice
 
         let activeIds = ExperienceUpgradeId
             .allCases
@@ -323,32 +342,5 @@ public extension ExperienceUpgrade {
         let experienceUpgrade = ExperienceUpgrade.anyFetch(uniqueId: uniqueId, transaction: transaction) ?? self
         changeBlock(experienceUpgrade)
         experienceUpgrade.anyUpsert(transaction: transaction)
-    }
-}
-
-/// A workaround bridge to allow PrivacySettingsTableViewController to clear an experience upgrade
-/// Feel free to remove this if that ever gets migrated to Swift
-@objc(OWSObjcExperienceUpgradeId)
-public enum ObjcExperienceUpgradeId: Int {
-    case introducingPins
-    case pinReminder
-    case notificationPermissionReminder
-    case contactPermissionReminder
-    case linkPreviews
-    case researchMegaphone1
-    case groupsV2AndMentionsSplash2
-    case groupCallsMegaphone
-
-    public var swiftRepresentation: ExperienceUpgradeId {
-        switch self {
-        case .introducingPins:                  return .introducingPins
-        case .pinReminder:                      return .pinReminder
-        case .notificationPermissionReminder:   return .notificationPermissionReminder
-        case .contactPermissionReminder:        return .contactPermissionReminder
-        case .linkPreviews:                     return .linkPreviews
-        case .researchMegaphone1:               return .researchMegaphone1
-        case .groupsV2AndMentionsSplash2:       return .groupsV2AndMentionsSplash2
-        case .groupCallsMegaphone:              return .groupCallsMegaphone
-        }
     }
 }

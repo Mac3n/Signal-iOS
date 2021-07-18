@@ -1,21 +1,14 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 import Foundation
 
-public struct TSGroupModelBuilder {
-
-    // MARK: - Dependencies
-
-    private var groupsV2: GroupsV2 {
-        return SSKEnvironment.shared.groupsV2
-    }
-
-    // MARK: -
+public struct TSGroupModelBuilder: Dependencies {
 
     public var groupId: Data?
     public var name: String?
+    public var descriptionText: String?
     public var avatarData: Data?
     public var groupMembership = GroupMembership()
     public var groupAccess: GroupAccess?
@@ -28,6 +21,8 @@ public struct TSGroupModelBuilder {
     public var isPlaceholderModel: Bool = false
     public var addedByAddress: SignalServiceAddress?
     public var wasJustMigrated: Bool = false
+    public var wasJustCreatedByLocalUser: Bool = false
+    public var didJustAddSelfViaGroupLink: Bool = false
     public var droppedMembers = [SignalServiceAddress]()
 
     public init() {}
@@ -37,6 +32,7 @@ public struct TSGroupModelBuilder {
     private init(groupV2Snapshot: GroupV2Snapshot) throws {
         self.groupId = try groupsV2.groupId(forGroupSecretParamsData: groupV2Snapshot.groupSecretParamsData)
         self.name = groupV2Snapshot.title
+        self.descriptionText = groupV2Snapshot.descriptionText
         self.avatarData = groupV2Snapshot.avatarData
         self.groupMembership = groupV2Snapshot.groupMembership
         self.groupAccess = groupV2Snapshot.groupAccess
@@ -47,6 +43,8 @@ public struct TSGroupModelBuilder {
         self.inviteLinkPassword = groupV2Snapshot.inviteLinkPassword
         self.isPlaceholderModel = false
         self.wasJustMigrated = false
+        self.wasJustCreatedByLocalUser = false
+        self.didJustAddSelfViaGroupLink = false
     }
 
     public
@@ -67,6 +65,12 @@ public struct TSGroupModelBuilder {
         let oldGroupModel = oldGroupThread.groupModel
         builder.droppedMembers = oldGroupModel.asBuilder.droppedMembers
         return builder
+    }
+
+    public mutating func apply(options: TSGroupModelOptions) {
+        if options.contains(.didJustAddSelfViaGroupLink) {
+            didJustAddSelfViaGroupLink = true
+        }
     }
 
     private func checkUsers() throws {
@@ -163,6 +167,12 @@ public struct TSGroupModelBuilder {
         case .V2:
             owsAssertDebug(addedByAddress == nil)
 
+            var descriptionText: String?
+            if let strippedDescriptionText = self.descriptionText?.stripped,
+               strippedDescriptionText.count > 0 {
+                descriptionText = strippedDescriptionText
+            }
+
             let groupAccess = buildGroupAccess(groupsVersion: groupsVersion)
             guard let groupSecretParamsData = groupSecretParamsData else {
                 throw OWSAssertionError("Missing groupSecretParamsData.")
@@ -174,6 +184,7 @@ public struct TSGroupModelBuilder {
             let droppedMembers = Array(Set(self.droppedMembers).subtracting(groupMembership.allMembersOfAnyKind))
             return TSGroupModelV2(groupId: groupId,
                                   name: name,
+                                  descriptionText: descriptionText,
                                   avatarData: avatarData,
                                   groupMembership: groupMembership,
                                   groupAccess: groupAccess,
@@ -183,6 +194,8 @@ public struct TSGroupModelBuilder {
                                   inviteLinkPassword: inviteLinkPassword,
                                   isPlaceholderModel: isPlaceholderModel,
                                   wasJustMigrated: wasJustMigrated,
+                                  wasJustCreatedByLocalUser: wasJustCreatedByLocalUser,
+                                  didJustAddSelfViaGroupLink: didJustAddSelfViaGroupLink,
                                   addedByAddress: addedByAddress,
                                   droppedMembers: droppedMembers)
         }
@@ -276,11 +289,29 @@ public extension TSGroupModel {
             builder.avatarUrlPath = v2.avatarUrlPath
             builder.inviteLinkPassword = v2.inviteLinkPassword
             builder.droppedMembers = v2.droppedMembers
+            builder.descriptionText = v2.descriptionText
 
-            // Do not copy isPlaceholderModel or wasJustMigrated;
+            // Do not copy transient properties:
+            //
+            // * isPlaceholderModel
+            // * wasJustMigrated
+            // * wasJustCreatedByLocalUser
+            // * didJustAddSelfViaGroupLink
+            //
             // We want to discard these values when updating group models.
         }
 
         return builder
+    }
+}
+
+// MARK: -
+
+public struct TSGroupModelOptions: OptionSet {
+    public let rawValue: Int
+    public static let didJustAddSelfViaGroupLink  = TSGroupModelOptions(rawValue: 1 << 0)
+
+    public init(rawValue: Int) {
+        self.rawValue = rawValue
     }
 }

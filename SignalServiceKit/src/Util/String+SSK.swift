@@ -1,5 +1,5 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 import Foundation
@@ -37,6 +37,10 @@ public extension String {
         })
     }
 
+    var entireRange: NSRange {
+        NSRange(location: 0, length: utf16.count)
+    }
+
     init?(sysctlKey key: String) {
         var size: Int = 0
         sysctlbyname(key, nil, &size, nil, 0)
@@ -65,11 +69,24 @@ public extension NSString {
     var asAttributedString: NSAttributedString {
         return NSAttributedString(string: self as String)
     }
+
+    func asAttributedString(attributes: [NSAttributedString.Key: Any] = [:]) -> NSAttributedString {
+        NSAttributedString(string: self as String, attributes: attributes)
+    }
 }
 
 // MARK: - Attributed String Concatentation
 
 public extension NSAttributedString {
+
+    var nilIfEmpty: NSAttributedString? {
+        isEmpty ? nil : self
+    }
+
+    var entireRange: NSRange {
+        NSRange(location: 0, length: string.utf16.count)
+    }
+
     @objc
     func stringByAppendingString(_ string: String, attributes: [NSAttributedString.Key: Any] = [:]) -> NSAttributedString {
         return stringByAppendingString(NSAttributedString(string: string, attributes: attributes))
@@ -99,6 +116,11 @@ public extension NSAttributedString {
         mutableString.ows_strip()
         return NSAttributedString(attributedString: mutableString)
     }
+
+    @objc
+    var isEmpty: Bool {
+        length < 1
+    }
 }
 
 // MARK: -
@@ -116,7 +138,18 @@ public enum ImageAttachmentHeightReference: Int {
     }
 }
 
+// MARK: -
+
 public extension NSMutableAttributedString {
+    func addAttributeToEntireString(_ name: NSAttributedString.Key, value: Any) {
+        addAttribute(name, value: value, range: entireRange)
+    }
+
+    @objc
+    func addAttributesToEntireString(_ attributes: [NSAttributedString.Key: Any] = [:]) {
+        addAttributes(attributes, range: entireRange)
+    }
+
     @objc
     func append(_ string: String, attributes: [NSAttributedString.Key: Any] = [:]) {
         append(NSAttributedString(string: string, attributes: attributes))
@@ -194,24 +227,7 @@ public extension NSMutableAttributedString {
             append("\u{200a}", attributes: attributes ?? [:])
         }
 
-        let attachment = NSTextAttachment()
-        attachment.image = image
-
-        // Match the image's height to the font's height while preserving
-        // the image's aspect ratio, and vertically center.
-        let imageHeight = heightReference.height(for: font)
-        let imageWidth = (imageHeight / image.size.height) * image.size.width
-        attachment.bounds = CGRect(x: 0, y: (font.capHeight - imageHeight) / 2, width: imageWidth, height: imageHeight)
-
-        let attachmentString = NSAttributedString(attachment: attachment)
-
-        if let attributes = attributes {
-            let mutableString = NSMutableAttributedString(attributedString: attachmentString)
-            mutableString.addAttributes(attributes, range: NSRange(location: 0, length: mutableString.length))
-            append(mutableString)
-        } else {
-            append(attachmentString)
-        }
+        append(.with(image: image, font: font, attributes: attributes, heightReference: heightReference))
     }
 
     @objc
@@ -247,6 +263,34 @@ public extension NSMutableAttributedString {
                 in: NSRange(location: 0, length: newStartOfString),
                 with: ""
             )
+        }
+    }
+}
+
+public extension NSAttributedString {
+    static func with(
+        image: UIImage,
+        font: UIFont,
+        attributes: [NSAttributedString.Key: Any]? = nil,
+        heightReference: ImageAttachmentHeightReference = .lineHeight
+    ) -> NSAttributedString {
+        let attachment = NSTextAttachment()
+        attachment.image = image
+
+        // Match the image's height to the font's height while preserving
+        // the image's aspect ratio, and vertically center.
+        let imageHeight = heightReference.height(for: font)
+        let imageWidth = (imageHeight / image.size.height) * image.size.width
+        attachment.bounds = CGRect(x: 0, y: (font.capHeight - imageHeight) / 2, width: imageWidth, height: imageHeight)
+
+        let attachmentString = NSAttributedString(attachment: attachment)
+
+        if let attributes = attributes {
+            let mutableString = NSMutableAttributedString(attributedString: attachmentString)
+            mutableString.addAttributes(attributes, range: mutableString.entireRange)
+            return mutableString
+        } else {
+            return attachmentString
         }
     }
 }
@@ -520,6 +564,64 @@ public extension String {
                 !$0.isEmoji
                     && !$0.isZeroWidthJoiner
             })
+    }
+
+    func trimToGlyphCount(_ maxGlyphCount: Int) -> String {
+        guard glyphCount > maxGlyphCount else {
+            return self
+        }
+        // Binary search for longest substring with valid glyph count.
+        var left: Int = 0
+        var right = count
+        while true {
+            let mid = (left + right) / 2
+            guard left != right,
+                  mid != left,
+                  mid != right else {
+                let result = substring(to: left)
+                owsAssertDebug(result.glyphCount <= maxGlyphCount)
+                return result
+            }
+            let segment = substring(to: mid)
+            if segment.glyphCount <= maxGlyphCount {
+                left = mid
+            } else {
+                right = mid
+            }
+        }
+    }
+
+    var utf8ByteCount: Int {
+        guard let data = data(using: .utf8) else {
+            owsFailDebug("Could not convert to utf-8.")
+            return 0
+        }
+        return data.count
+    }
+
+    func trimToUtf8ByteCount(_ maxByteCount: Int) -> String {
+        guard utf8ByteCount > maxByteCount else {
+            return self
+        }
+        // Binary search for longest substring with valid UTF-8 count.
+        var left: Int = 0
+        var right = count
+        while true {
+            let mid = (left + right) / 2
+            guard left != right,
+                  mid != left,
+                  mid != right else {
+                let result = substring(to: left)
+                owsAssertDebug(result.utf8ByteCount <= maxByteCount)
+                return result
+            }
+            let segment = substring(to: mid)
+            if segment.utf8ByteCount <= maxByteCount {
+                left = mid
+            } else {
+                right = mid
+            }
+        }
     }
 }
 

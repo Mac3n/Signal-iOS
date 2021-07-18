@@ -1,15 +1,15 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
-#import "OWSDevicesService.h"
 #import "NSNotificationCenter+OWS.h"
-#import "OWSDevice.h"
-#import "OWSError.h"
-#import "OWSRequestFactory.h"
-#import "TSNetworkManager.h"
 #import <Mantle/MTLJSONAdapter.h>
+#import <SignalServiceKit/OWSDevice.h>
+#import <SignalServiceKit/OWSDevicesService.h>
+#import <SignalServiceKit/OWSError.h>
+#import <SignalServiceKit/OWSRequestFactory.h>
 #import <SignalServiceKit/SignalServiceKit-Swift.h>
+#import <SignalServiceKit/TSNetworkManager.h>
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -19,11 +19,6 @@ NSNotificationName const NSNotificationNameDeviceListUpdateModifiedDeviceList
     = @"NSNotificationNameDeviceListUpdateModifiedDeviceList";
 
 @implementation OWSDevicesService
-
-+ (SDSDatabaseStorage *)databaseStorage
-{
-    return SDSDatabaseStorage.shared;
-}
 
 + (void)refreshDevices
 {

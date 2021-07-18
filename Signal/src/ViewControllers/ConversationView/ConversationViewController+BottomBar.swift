@@ -1,5 +1,5 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 import Foundation
@@ -26,24 +26,31 @@ public extension ConversationViewController {
             // For perf reasons, we avoid adding any "bottom view"
             // to the view hierarchy until its necessary, e.g. when
             // the view is about to appear.
-            owsAssertDebug(hasViewWillAppearOccurred)
+            owsAssertDebug(hasViewWillAppearEverBegun)
 
             if viewState.bottomViewType != newValue {
+                if viewState.bottomViewType == .inputToolbar {
+                    // Dismiss the keyboard if we're swapping out the input toolbar
+                    dismissKeyBoard()
+                }
                 viewState.bottomViewType = newValue
                 updateBottomBar()
             }
         }
     }
 
-    @objc
     func ensureBottomViewType() {
         AssertIsOnMainThread()
+
+        guard viewState.selectionAnimationState == .idle else {
+            return
+        }
 
         bottomViewType = { () -> CVCBottomViewType in
             // The ordering of this method determines
             // precendence of the bottom views.
 
-            if !hasViewWillAppearOccurred {
+            if !hasViewWillAppearEverBegun {
                 return .none
             } else if threadViewModel.hasPendingMessageRequest {
                 let messageRequestType = Self.databaseStorage.read { transaction in
@@ -62,7 +69,11 @@ public extension ConversationViewController {
                 case .selection:
                     return .selection
                 case .normal:
-                    return .inputToolbar
+                    if viewState.isInPreviewPlatter || userLeftGroup {
+                        return .none
+                    } else {
+                        return .inputToolbar
+                    }
                 }
             }
         }()
@@ -70,6 +81,10 @@ public extension ConversationViewController {
 
     private func updateBottomBar() {
         AssertIsOnMainThread()
+
+        guard hasViewWillAppearEverBegun else {
+            return
+        }
 
         // Animate the dismissal of any existing request view.
         dismissRequestView()
@@ -121,36 +136,69 @@ public extension ConversationViewController {
         }
 
         updateInputAccessoryPlaceholderHeight()
-        updateContentInsets(animated: viewHasEverAppeared)
-        updateInputVisibility()
+        updateBottomBarPosition()
+        updateContentInsets(animated: hasAppearedAndHasAppliedFirstLoad)
     }
 
     // This is expensive. We only need to do it if conversationStyle has changed.
     //
     // TODO: Once conversationStyle is immutable, compare the old and new
     //       conversationStyle values and exit early if it hasn't changed.
-    @objc
     func updateInputToolbar() {
         AssertIsOnMainThread()
 
-        let existingDraft = inputToolbar.messageBody()
-
-        let inputToolbar = buildInputToolbar(conversationStyle: conversationStyle)
-        inputToolbar.setMessageBody(existingDraft, animated: false)
-        self.inputToolbar = inputToolbar
-
-        // updateBottomBar() is expensive and we need to avoid it while
-        // initially configuring the view. viewWillAppear() will call
-        // updateBottomBar(). After viewWillAppear(), we need to call
-        // updateBottomBar() to reflect changes in the theme.
-        if hasViewWillAppearOccurred {
-            updateBottomBar()
+        guard hasViewWillAppearEverBegun else {
+            return
         }
+
+        var messageDraft: MessageBody?
+        var voiceMemoDraft: VoiceMessageModel?
+        if let oldInputToolbar = self.inputToolbar {
+            // Maintain draft continuity.
+            messageDraft = oldInputToolbar.messageBody()
+            voiceMemoDraft = oldInputToolbar.voiceMemoDraft
+        } else {
+            Self.databaseStorage.read { transaction in
+                messageDraft = self.thread.currentDraft(with: transaction)
+                if VoiceMessageModel.hasDraft(for: self.thread, transaction: transaction) {
+                    voiceMemoDraft = VoiceMessageModel(thread: self.thread)
+                }
+            }
+        }
+
+        let newInputToolbar = buildInputToolbar(conversationStyle: conversationStyle,
+                                                messageDraft: messageDraft,
+                                                voiceMemoDraft: voiceMemoDraft)
+
+        self.inputToolbar = newInputToolbar
+
+        newInputToolbar.updateFontSizes()
+
+        updateBottomBar()
     }
 
     @objc
+    func reloadDraft() {
+        AssertIsOnMainThread()
+
+        guard let messageDraft = (Self.databaseStorage.read { transaction in
+            self.thread.currentDraft(with: transaction)
+        }) else {
+            return
+        }
+        guard let inputToolbar = self.inputToolbar else {
+            owsFailDebug("Missing inputToolbar.")
+            return
+        }
+        inputToolbar.setMessageBody(messageDraft, animated: false)
+    }
+
     func updateBottomBarPosition() {
         AssertIsOnMainThread()
+
+        guard hasViewWillAppearEverBegun else {
+            return
+        }
 
         if let interactivePopGestureRecognizer = navigationController?.interactivePopGestureRecognizer {
             // Don't update the bottom bar position if an interactive pop is in progress
@@ -162,14 +210,22 @@ public extension ConversationViewController {
             }
         }
 
-        bottomBarBottomConstraint?.constant = -inputAccessoryPlaceholder.keyboardOverlap
+        guard let bottomBarBottomConstraint = bottomBarBottomConstraint,
+              let bottomBarSuperview = bottomBar.superview else {
+            return
+        }
+        let bottomBarPosition = -inputAccessoryPlaceholder.keyboardOverlap
+        let didChange = bottomBarBottomConstraint.constant != bottomBarPosition
+        guard didChange else {
+            return
+        }
+        bottomBarBottomConstraint.constant = bottomBarPosition
 
         // We always want to apply the new bottom bar position immediately,
         // as this only happens during animations (interactive or otherwise)
-        bottomBar.superview?.layoutIfNeeded()
+        bottomBarSuperview.layoutIfNeeded()
     }
 
-    @objc
     func updateInputAccessoryPlaceholderHeight() {
         AssertIsOnMainThread()
 
@@ -190,7 +246,6 @@ public extension ConversationViewController {
 
     // MARK: - Message Request
 
-    @objc
     func showMessageRequestDialogIfRequiredAsync() {
         AssertIsOnMainThread()
 
@@ -199,35 +254,22 @@ public extension ConversationViewController {
         }
     }
 
-    @objc
     func showMessageRequestDialogIfRequired() {
         AssertIsOnMainThread()
 
         ensureBottomViewType()
     }
 
-    @objc
-    func updateInputVisibility() {
-        AssertIsOnMainThread()
-
-        if viewState.isInPreviewPlatter {
-            inputToolbar.isHidden = true
-            dismissKeyBoard()
-            return
-        }
-
-        if self.userLeftGroup {
-            // user has requested they leave the group. further sends disallowed
-            inputToolbar.isHidden = true
-            dismissKeyBoard()
-        } else {
-            inputToolbar.isHidden = false
-        }
-    }
-
-    @objc
     func updateInputToolbarLayout() {
         AssertIsOnMainThread()
+
+        guard hasViewWillAppearEverBegun else {
+            return
+        }
+        guard let inputToolbar = inputToolbar else {
+            owsFailDebug("Missing inputToolbar.")
+            return
+        }
 
         inputToolbar.updateLayout(withSafeAreaInsets: view.safeAreaInsets)
     }
@@ -236,12 +278,34 @@ public extension ConversationViewController {
     func popKeyBoard() {
         AssertIsOnMainThread()
 
+        guard hasViewWillAppearEverBegun else {
+            owsFailDebug("InputToolbar not yet ready.")
+            return
+        }
+        guard let inputToolbar = inputToolbar else {
+            owsFailDebug("Missing inputToolbar.")
+            return
+        }
+
         inputToolbar.beginEditingMessage()
     }
 
-    @objc
     func dismissKeyBoard() {
         AssertIsOnMainThread()
+
+        guard hasViewWillAppearEverBegun else {
+            owsFailDebug("InputToolbar not yet ready.")
+            return
+        }
+
+        guard viewState.selectionAnimationState == .idle else {
+            return
+        }
+
+        guard let inputToolbar = inputToolbar else {
+            owsFailDebug("Missing inputToolbar.")
+            return
+        }
 
         inputToolbar.endEditingMessage()
         inputToolbar.clearDesiredKeyboard()
@@ -283,7 +347,6 @@ public extension ConversationViewController {
         return groupThread.isLocalUserRequestingMember
     }
 
-    @objc
     var userLeftGroup: Bool {
         guard let groupThread = thread as? TSGroupThread else {
             return false

@@ -1,5 +1,5 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 import Foundation
@@ -33,7 +33,6 @@ public enum AppNotificationCategory: CaseIterable {
     case missedCallWithActions
     case missedCallWithoutActions
     case missedCallFromNoLongerVerifiedIdentity
-    case grdbMigration
 }
 
 public enum AppNotificationAction: String, CaseIterable {
@@ -84,8 +83,6 @@ extension AppNotificationCategory {
             return "Signal.AppNotificationCategory.missedCall"
         case .missedCallFromNoLongerVerifiedIdentity:
             return "Signal.AppNotificationCategory.missedCallFromNoLongerVerifiedIdentity"
-        case .grdbMigration:
-            return "Signal.AppNotificationCategory.grdbMigration"
         }
     }
 
@@ -118,8 +115,6 @@ extension AppNotificationCategory {
             return []
         case .missedCallFromNoLongerVerifiedIdentity:
             return []
-        case .grdbMigration:
-            return []
         }
     }
 }
@@ -149,12 +144,12 @@ extension AppNotificationAction {
 
 // Delay notification of incoming messages when it's likely to be read by a linked device to
 // avoid notifying a user on their phone while a conversation is actively happening on desktop.
-let kNotificationDelayForRemoteRead: TimeInterval = 5
+let kNotificationDelayForRemoteRead: TimeInterval = 20
 
 let kAudioNotificationsThrottleCount = 2
 let kAudioNotificationsThrottleInterval: TimeInterval = 5
 
-protocol NotificationPresenterAdaptee: class {
+protocol NotificationPresenterAdaptee: AnyObject {
 
     func registerNotificationSettings() -> Promise<Void>
 
@@ -166,8 +161,6 @@ protocol NotificationPresenterAdaptee: class {
     func cancelNotifications(messageId: String)
     func cancelNotifications(reactionId: String)
     func clearAllNotifications()
-
-    func notifyUserForGRDBMigration()
 
     var hasReceivedSyncMessageRecently: Bool { get }
 }
@@ -188,24 +181,7 @@ public class NotificationPresenter: NSObject, NotificationsProtocol {
 
         super.init()
 
-        AppReadiness.runNowOrWhenAppDidBecomeReady {
-            NotificationCenter.default.addObserver(self, selector: #selector(self.handleMessageRead), name: .incomingMessageMarkedAsRead, object: nil)
-        }
         SwiftSingletons.register(self)
-    }
-
-    // MARK: - Dependencies
-
-    var contactsManager: OWSContactsManager {
-        return Environment.shared.contactsManager
-    }
-
-    var identityManager: OWSIdentityManager {
-        return OWSIdentityManager.shared()
-    }
-
-    var preferences: OWSPreferences {
-        return Environment.shared.preferences
     }
 
     var previewType: NotificationType {
@@ -214,21 +190,6 @@ public class NotificationPresenter: NSObject, NotificationsProtocol {
 
     var shouldShowActions: Bool {
         return previewType == .namePreview
-    }
-
-    // MARK: -
-
-    @objc
-    public func handleMessageRead(notification: Notification) {
-        AssertIsOnMainThread()
-
-        switch notification.object {
-        case let incomingMessage as TSIncomingMessage:
-            Logger.debug("canceled notification for message: \(incomingMessage)")
-            cancelNotifications(messageId: incomingMessage.uniqueId)
-        default:
-            break
-        }
     }
 
     // MARK: - Presenting Notifications
@@ -392,8 +353,12 @@ public class NotificationPresenter: NSObject, NotificationsProtocol {
         return userInfo
     }
 
+    public func isThreadMuted(_ thread: TSThread, transaction: SDSAnyReadTransaction) -> Bool {
+        ThreadAssociatedData.fetchOrDefault(for: thread, transaction: transaction).isMuted
+    }
+
     public func canNotify(for incomingMessage: TSIncomingMessage, thread: TSThread, transaction: SDSAnyReadTransaction) -> Bool {
-        guard thread.isMuted else { return true }
+        guard isThreadMuted(thread, transaction: transaction) else { return true }
 
         guard let localAddress = TSAccountManager.localAddress else {
             owsFailDebug("Missing local address")
@@ -437,7 +402,7 @@ public class NotificationPresenter: NSObject, NotificationsProtocol {
                                            senderName,
                                            groupThread.groupNameOrDefault)
             default:
-                owsFailDebug("unexpected thread: \(thread)")
+                owsFailDebug("unexpected thread: \(thread.uniqueId)")
                 return
             }
 
@@ -492,7 +457,7 @@ public class NotificationPresenter: NSObject, NotificationsProtocol {
 
     public func notifyUser(for reaction: OWSReaction, on message: TSOutgoingMessage, thread: TSThread, transaction: SDSAnyReadTransaction) {
 
-        guard !thread.isMuted else { return }
+        guard !isThreadMuted(thread, transaction: transaction) else { return }
 
         // Reaction notifications only get displayed if we can
         // include the reaction details, otherwise we don't
@@ -513,7 +478,7 @@ public class NotificationPresenter: NSObject, NotificationsProtocol {
                 groupThread.groupNameOrDefault
             )
         default:
-            owsFailDebug("unexpected thread: \(thread)")
+            owsFailDebug("unexpected thread: \(thread.uniqueId)")
             return
         }
 
@@ -540,14 +505,14 @@ public class NotificationPresenter: NSObject, NotificationsProtocol {
                 notificationBody = String(format: NotificationStrings.incomingReactionAlbumMessageFormat, reaction.emoji)
             } else if firstAttachment?.isImage == true {
                 notificationBody = String(format: NotificationStrings.incomingReactionPhotoMessageFormat, reaction.emoji)
+            } else if firstAttachment?.isAnimated == true || firstAttachment?.isLoopingVideo == true {
+                notificationBody = String(format: NotificationStrings.incomingReactionGifMessageFormat, reaction.emoji)
             } else if firstAttachment?.isVideo == true {
                 notificationBody = String(format: NotificationStrings.incomingReactionVideoMessageFormat, reaction.emoji)
             } else if firstAttachment?.isVoiceMessage == true {
                 notificationBody = String(format: NotificationStrings.incomingReactionVoiceMessageFormat, reaction.emoji)
             } else if firstAttachment?.isAudio == true {
                 notificationBody = String(format: NotificationStrings.incomingReactionAudioMessageFormat, reaction.emoji)
-            } else if firstAttachment?.isAnimated == true {
-                notificationBody = String(format: NotificationStrings.incomingReactionGifMessageFormat, reaction.emoji)
             } else {
                 notificationBody = String(format: NotificationStrings.incomingReactionFileMessageFormat, reaction.emoji)
             }
@@ -668,9 +633,7 @@ public class NotificationPresenter: NSObject, NotificationsProtocol {
     }
 
     public func notifyUser(for previewableInteraction: TSInteraction & OWSPreviewText, thread: TSThread, wantsSound: Bool, transaction: SDSAnyWriteTransaction) {
-        guard !thread.isMuted else {
-            return
-        }
+        guard !isThreadMuted(thread, transaction: transaction) else { return }
 
         let notificationTitle: String?
         let threadIdentifier: String?
@@ -701,7 +664,7 @@ public class NotificationPresenter: NSObject, NotificationsProtocol {
             AppNotificationUserInfoKey.defaultAction: preferredDefaultAction.rawValue
         ]
 
-        transaction.addAsyncCompletion {
+        transaction.addAsyncCompletionOnMain {
             let sound = wantsSound ? self.requestSound(thread: thread) : nil
             self.adaptee.notify(category: .infoOrErrorMessage,
                                 title: notificationTitle,
@@ -715,7 +678,7 @@ public class NotificationPresenter: NSObject, NotificationsProtocol {
     public func notifyUser(for errorMessage: ThreadlessErrorMessage, transaction: SDSAnyWriteTransaction) {
         let notificationBody = errorMessage.previewText(transaction: transaction)
 
-        transaction.addAsyncCompletion {
+        transaction.addAsyncCompletionOnMain {
             let sound = self.checkIfShouldPlaySound() ? OWSSounds.globalNotificationSound() : nil
             self.adaptee.notify(category: .threadlessErrorMessage,
                                 title: nil,
@@ -744,11 +707,6 @@ public class NotificationPresenter: NSObject, NotificationsProtocol {
     @objc
     public func clearAllNotifications() {
         adaptee.clearAllNotifications()
-    }
-
-    @objc
-    public func notifyUserForGRDBMigration() {
-        adaptee.notifyUserForGRDBMigration()
     }
 
     // MARK: -

@@ -1,5 +1,5 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 import Foundation
@@ -71,6 +71,19 @@ import Foundation
     }
 
     @objc
+    public class var okayAction: ActionSheetAction {
+        let action = ActionSheetAction(
+            title: CommonStrings.okButton,
+            accessibilityIdentifier: "OWSActionSheets.okay",
+            style: .cancel
+        ) { _ in
+            Logger.debug("Okay item")
+            // Do nothing.
+        }
+        return action
+    }
+
+    @objc
     public class var cancelAction: ActionSheetAction {
         let action = ActionSheetAction(
             title: CommonStrings.cancelButton,
@@ -129,14 +142,14 @@ import Foundation
             return
         }
 
-        if let iOSUpgradeNagDate = Environment.shared.preferences.iOSUpgradeNagDate() {
+        if let iOSUpgradeNagDate = Self.preferences.iOSUpgradeNagDate() {
             let kNagFrequencySeconds = 3 * kDayInterval
             guard fabs(iOSUpgradeNagDate.timeIntervalSinceNow) > kNagFrequencySeconds else {
                 return
             }
         }
 
-        Environment.shared.preferences.setIOSUpgradeNagDate(Date())
+        Self.preferences.setIOSUpgradeNagDate(Date())
 
         OWSActionSheets.showActionSheet(title: NSLocalizedString("UPGRADE_IOS_ALERT_TITLE",
                                                         comment: "Title for the alert indicating that user should upgrade iOS."),

@@ -1,9 +1,9 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
-#import "OWSOutgoingReactionMessage.h"
 #import <SignalCoreKit/NSDate+OWS.h>
+#import <SignalServiceKit/OWSOutgoingReactionMessage.h>
 #import <SignalServiceKit/SignalServiceKit-Swift.h>
 
 NS_ASSUME_NONNULL_BEGIN
@@ -58,7 +58,8 @@ NS_ASSUME_NONNULL_BEGIN
     }
 
     SSKProtoDataMessageReactionBuilder *reactionBuilder =
-        [SSKProtoDataMessageReaction builderWithEmoji:self.emoji remove:self.isRemoving timestamp:message.timestamp];
+        [SSKProtoDataMessageReaction builderWithEmoji:self.emoji timestamp:message.timestamp];
+    [reactionBuilder setRemove:self.isRemoving];
 
     SignalServiceAddress *_Nullable messageAuthor;
 

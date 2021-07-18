@@ -26,7 +26,7 @@ class EmojiGenerator {
 
     static let emojiDirectory = URL(fileURLWithPath: "../Signal/src/util/Emoji", isDirectory: true, relativeTo: pathToFolderContainingThisScript!)
 
-    enum EmojiCategory: String, Codable {
+    enum EmojiCategory: String, Codable, Equatable {
         case smileys = "Smileys & Emotion"
         case people = "People & Body"
 
@@ -42,9 +42,10 @@ class EmojiGenerator {
         case symbols = "Symbols"
         case flags = "Flags"
         case skinTones = "Skin Tones"
+        case components = "Component"
     }
 
-    enum SkinTone: String, CaseIterable {
+    enum SkinTone: String, CaseIterable, Equatable {
         case light = "1F3FB"
         case mediumLight = "1F3FC"
         case medium = "1F3FD"
@@ -96,12 +97,6 @@ class EmojiGenerator {
             case "couplekiss": return "personKissPerson"
             case "couple": return "womanAndManHoldingHands"
             case "couple_with_heart": return "personHeartPerson"
-            case "beetle":
-                if name == "LADY BEETLE" { return "ladyBeetle" }
-                return "beetle"
-            case "man_in_tuxedo":
-                if name == nil { return "manInTuxedo" }
-                return "personInTuxedo"
             default:
                 let uppperCamelCase = shortName.replacingOccurrences(of: "-", with: "_").components(separatedBy: "_").map(titlecase).joined(separator: "")
                 return String(uppperCamelCase.unicodeScalars.first!).lowercased() + String(uppperCamelCase.unicodeScalars.dropFirst())
@@ -131,7 +126,7 @@ class EmojiGenerator {
         }
         var sortedEmojiPerSkinTone: [([SkinTone], String)]? {
             guard let emojiPerSkinTone = emojiPerSkinTone else { return nil }
-            return emojiPerSkinTone.sorted { lhs, rhs in 
+            return emojiPerSkinTone.sorted { lhs, rhs in
                 var index = 0
                 while true {
                     if index >= lhs.key.count {
@@ -191,13 +186,15 @@ class EmojiGenerator {
         // Main enum
         writeBlock(fileName: "Emoji.swift") { fileHandle in
             fileHandle.writeLine("/// A sorted representation of all available emoji")
-            fileHandle.writeLine("enum Emoji: String, CaseIterable {")
+            fileHandle.writeLine("// swiftlint:disable all")
+            fileHandle.writeLine("enum Emoji: String, CaseIterable, Equatable {")
 
             for emojiData in sortedEmojiData {
                 fileHandle.writeLine("    case \(emojiData.enumName) = \"\(emojiData.emoji)\"")
             }
 
             fileHandle.writeLine("}")
+            fileHandle.writeLine("// swiftlint:disable all")
         }
 
         // Conversion from String
@@ -206,20 +203,26 @@ class EmojiGenerator {
 
             fileHandle.writeLine("    init?(rawValue: String) {")
             fileHandle.writeLine("        guard rawValue.isSingleEmoji else { return nil }")
-            fileHandle.writeLine("        switch rawValue {")
 
-            for emojiData in sortedEmojiData {
-                fileHandle.writeLine("        case \"\(emojiData.emoji)\": self.init(baseEmoji: .\(emojiData.enumName), skinTones: nil)")
+            for (index, emojiData) in sortedEmojiData.enumerated() {
+                if index == 0 {
+                    fileHandle.writeLine("        if rawValue == \"\(emojiData.emoji)\" {")
+                } else {
+                    fileHandle.writeLine("        } else if rawValue == \"\(emojiData.emoji)\" {")
+                }
+
+                fileHandle.writeLine("            self.init(baseEmoji: .\(emojiData.enumName), skinTones: nil)")
 
                 if let sortedEmojiPerSkinTone = emojiData.sortedEmojiPerSkinTone {
                     for (skinTones, emoji) in sortedEmojiPerSkinTone {
-                        fileHandle.writeLine("        case \"\(emoji)\": self.init(baseEmoji: .\(emojiData.enumName), skinTones: [\(skinTones.map { ".\($0)" }.joined(separator: ", "))])")
+                        fileHandle.writeLine("        } else if rawValue == \"\(emoji)\" {")
+                        fileHandle.writeLine("            self.init(baseEmoji: .\(emojiData.enumName), skinTones: [\(skinTones.map { ".\($0)" }.joined(separator: ", "))])")
                     }
                 }
             }
 
-            fileHandle.writeLine("        default: return nil")
-
+            fileHandle.writeLine("        } else {")
+            fileHandle.writeLine("            return nil ")
             fileHandle.writeLine("        }")
 
             fileHandle.writeLine("    }")
@@ -232,7 +235,7 @@ class EmojiGenerator {
             fileHandle.writeLine("extension Emoji {")
 
             // Start SkinTone enum
-            fileHandle.writeLine("    enum SkinTone: String, CaseIterable {")
+            fileHandle.writeLine("    enum SkinTone: String, CaseIterable, Equatable {")
             for skinTone in SkinTone.allCases {
                 fileHandle.writeLine("        case \(skinTone) = \"\(skinTone.unicodeScalar)\"")
             }
@@ -296,7 +299,7 @@ class EmojiGenerator {
             fileHandle.writeLine("extension Emoji {")
 
             // Start Category enum
-            fileHandle.writeLine("    enum Category: String, CaseIterable {")
+            fileHandle.writeLine("    enum Category: String, CaseIterable, Equatable {")
             for category in outputCategories {
                 fileHandle.writeLine("        case \(category) = \"\(category.rawValue)\"")
             }
@@ -364,7 +367,9 @@ class EmojiGenerator {
 
             for emojiData in sortedEmojiData {
                 let category = [.smileys, .people].contains(emojiData.category) ? .smileysAndPeople : emojiData.category
-                fileHandle.writeLine("        case .\(emojiData.enumName): return .\(category)")
+                if category != .components {
+                    fileHandle.writeLine("        case .\(emojiData.enumName): return .\(category)")
+                }
             }
 
             // Write a default case, because this enum is too long for the compiler to validate it's exhaustive

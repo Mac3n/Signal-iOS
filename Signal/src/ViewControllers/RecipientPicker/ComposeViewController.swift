@@ -1,5 +1,5 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 import Foundation
@@ -28,7 +28,17 @@ class ComposeViewController: OWSViewController {
         recipientPicker.view.autoPinEdge(toSuperviewEdge: .trailing)
         recipientPicker.view.autoPinEdge(toSuperviewEdge: .bottom)
 
-        navigationItem.leftBarButtonItem = UIBarButtonItem(barButtonSystemItem: .stop, target: self, action: #selector(dismissPressed))
+        navigationItem.leftBarButtonItem = UIBarButtonItem(barButtonSystemItem: .cancel, target: self, action: #selector(dismissPressed))
+    }
+
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        recipientPicker.applyTheme(to: self)
+    }
+
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        recipientPicker.removeTheme(from: self)
     }
 
     @objc func dismissPressed() {
@@ -40,9 +50,14 @@ class ComposeViewController: OWSViewController {
     }
 
     func newConversation(address: SignalServiceAddress) {
-        assert(address.isValid)
-        let thread = TSContactThread.getOrCreateThread(contactAddress: address)
-        newConversation(thread: thread)
+        AssertIsOnMainThread()
+        owsAssertDebug(address.isValid)
+
+        let thread = Self.databaseStorage.write { transaction in
+            TSContactThread.getOrCreateThread(withContactAddress: address,
+                                              transaction: transaction)
+        }
+        self.newConversation(thread: thread)
     }
 
     func newConversation(thread: TSThread) {
@@ -99,7 +114,8 @@ extension ComposeViewController: RecipientPickerDelegate {
 
     func recipientPicker(
         _ recipientPickerViewController: RecipientPickerViewController,
-        accessoryMessageForRecipient recipient: PickedRecipient
+        accessoryMessageForRecipient recipient: PickedRecipient,
+        transaction: SDSAnyReadTransaction
     ) -> String? {
         switch recipient.identifier {
         case .address(let address):
@@ -108,6 +124,24 @@ extension ComposeViewController: RecipientPickerDelegate {
         case .group(let thread):
             guard contactsViewHelper.isThreadBlocked(thread) else { return nil }
             return MessageStrings.conversationIsBlocked
+        }
+    }
+
+    func recipientPicker(_ recipientPickerViewController: RecipientPickerViewController,
+                         attributedSubtitleForRecipient recipient: PickedRecipient,
+                         transaction: SDSAnyReadTransaction) -> NSAttributedString? {
+        switch recipient.identifier {
+        case .address(let address):
+            guard !address.isLocalAddress else {
+                return nil
+            }
+            if let bioForDisplay = Self.profileManagerImpl.profileBioForDisplay(for: address,
+                                                                                transaction: transaction) {
+                return NSAttributedString(string: bioForDisplay)
+            }
+            return nil
+        case .group:
+            return nil
         }
     }
 

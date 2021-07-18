@@ -1,5 +1,5 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 import Foundation
@@ -45,10 +45,17 @@ public class GroupMigrationActionSheet: UIView {
             return GroupMigrationActionSheet(groupThread: groupThread,
                                              mode: .migrationComplete(oldGroupModel: oldGroupModel,
                                                                       newGroupModel: newGroupModel))
-        } else {
-            return GroupMigrationActionSheet(groupThread: groupThread,
-                                             mode: .reAddDroppedMembers(members: Set(droppedMembers)))
         }
+
+        guard let droppedMembersInfo = Self.buildDroppedMembersInfo(thread: groupThread),
+              !droppedMembersInfo.addableMembers.isEmpty else {
+            return GroupMigrationActionSheet(groupThread: groupThread,
+                                             mode: .migrationComplete(oldGroupModel: oldGroupModel,
+                                                                      newGroupModel: newGroupModel))
+        }
+
+        return GroupMigrationActionSheet(groupThread: groupThread,
+                                         mode: .reAddDroppedMembers(members: droppedMembersInfo.addableMembers))
     }
 
     required init(coder: NSCoder) {
@@ -73,7 +80,7 @@ public class GroupMigrationActionSheet: UIView {
         stackView.alignment = .fill
         stackView.layoutMargins = UIEdgeInsets(top: 48, leading: 20, bottom: 38, trailing: 24)
         stackView.isLayoutMarginsRelativeArrangement = true
-        stackView.addBackgroundView(withBackgroundColor: Theme.backgroundColor)
+        stackView.addBackgroundView(withBackgroundColor: Theme.actionSheetBackgroundColor)
 
         layoutMargins = .zero
         addSubview(stackView)
@@ -81,15 +88,7 @@ public class GroupMigrationActionSheet: UIView {
         stackView.setContentHuggingHorizontalLow()
     }
 
-    private struct Builder {
-
-        // MARK: - Dependencies
-
-        private static var contactsManager: OWSContactsManager {
-            return Environment.shared.contactsManager
-        }
-
-        // MARK: -
+    private struct Builder: Dependencies {
 
         var subviews = [UIView]()
 
@@ -162,25 +161,15 @@ public class GroupMigrationActionSheet: UIView {
         }
 
         mutating func addMemberRow(address: SignalServiceAddress,
-                          transaction: SDSAnyReadTransaction) {
+                                   transaction: SDSAnyReadTransaction) {
 
-            let avatarSize: UInt = 28
-            let conversationColorName = TSContactThread.conversationColorName(forContactAddress: address,
-                                                                              transaction: transaction)
-            let avatarBuilder = OWSContactAvatarBuilder(address: address,
-                                                        colorName: conversationColorName,
-                                                        diameter: avatarSize,
-                                                        transaction: transaction)
-            let avatar = avatarBuilder.build(with: transaction)
-
-            let avatarView = AvatarImageView()
-            avatarView.image = avatar
-            avatarView.autoSetDimensions(to: CGSize(square: CGFloat(avatarSize)))
-            avatarView.setContentHuggingHorizontalHigh()
+            let avatarView = ConversationAvatarView(diameterPoints: 28,
+                                                    localUserDisplayMode: .asUser)
+            avatarView.configure(address: address, transaction: transaction)
 
             let label = buildLabel()
             label.font = .ows_dynamicTypeBody
-            label.text = Self.contactsManager.displayName(for: address, transaction: transaction)
+            label.text = Self.contactsManagerImpl.displayName(for: address, transaction: transaction)
             label.setContentHuggingHorizontalLow()
 
             let row = UIStackView(arrangedSubviews: [avatarView, label])
@@ -466,10 +455,7 @@ public class GroupMigrationActionSheet: UIView {
             owsFailDebug("Missing frontmostViewController.")
             return
         }
-
-        let toastController = ToastController(text: text)
-        let toastInset = viewController.bottomLayoutGuide.length + 8
-        toastController.presentToastView(fromBottomOfView: viewController.view, inset: toastInset)
+        viewController.presentToast(text: text)
     }
 
     // MARK: - Events
@@ -490,15 +476,29 @@ private extension GroupMigrationActionSheet {
             owsFailDebug("Missing actionSheetController.")
             return
         }
+
+        let groupThread = self.groupThread
+        if GroupsV2Migration.verboseLogging {
+            Logger.info("groupId: \(groupThread.groupId.hexadecimalString)")
+        }
+
         ModalActivityIndicatorViewController.present(fromViewController: actionSheetController,
                                                      canCancel: false) { modalActivityIndicator in
                                                         firstly {
                                                             self.upgradePromise()
                                                         }.done { (_) in
+                                                            if GroupsV2Migration.verboseLogging {
+                                                                Logger.info("success groupId: \(groupThread.groupId.hexadecimalString)")
+                                                            }
+
                                                             modalActivityIndicator.dismiss {
                                                                 self.dismissAndShowUpgradeSuccessToast()
                                                             }
                                                         }.catch { error in
+                                                            if GroupsV2Migration.verboseLogging {
+                                                                Logger.info("failure groupId: \(groupThread.groupId.hexadecimalString), error: \(error)")
+                                                            }
+
                                                             owsFailDebug("Error: \(error)")
 
                                                             modalActivityIndicator.dismiss {
@@ -551,7 +551,9 @@ private extension GroupMigrationActionSheet {
                                                         firstly {
                                                             self.reAddDroppedMembersPromise(members: members)
                                                         }.done { (_) in
-                                                            modalActivityIndicator.dismiss {}
+                                                            modalActivityIndicator.dismiss {
+                                                                self.dismissActionSheet()
+                                                            }
                                                         }.catch { error in
                                                             owsFailDebug("Error: \(error)")
 
@@ -604,6 +606,12 @@ private extension GroupMigrationActionSheet {
         }.asVoid()
     }
 
+    private func dismissActionSheet() {
+        AssertIsOnMainThread()
+
+        actionSheetController?.dismiss(animated: true)
+    }
+
     private func showUpgradeFailedAlert(error: Error) {
         AssertIsOnMainThread()
 
@@ -623,5 +631,46 @@ private extension GroupMigrationActionSheet {
                                         comment: "Message for error alert indicating the group update failed.")
         }
         OWSActionSheets.showActionSheet(title: title, message: message, fromViewController: actionSheetController)
+    }
+}
+
+// MARK: -
+
+public extension GroupMigrationActionSheet {
+
+    struct DroppedMembersInfo {
+        let groupThread: TSGroupThread
+        let addableMembers: Set<SignalServiceAddress>
+    }
+
+    static func buildDroppedMembersInfo(thread: TSThread) -> DroppedMembersInfo? {
+        guard let groupThread = thread as? TSGroupThread else {
+            return nil
+        }
+        guard let groupModel = groupThread.groupModel as? TSGroupModelV2 else {
+            return nil
+        }
+        guard groupThread.isLocalUserFullMember else {
+            return nil
+        }
+
+        var addableMembers = Set<SignalServiceAddress>()
+        Self.databaseStorage.read { transaction in
+            for address in groupModel.droppedMembers {
+                guard address.uuid != nil else {
+                    continue
+                }
+                guard GroupsV2Migration.doesUserHaveBothCapabilities(address: address, transaction: transaction) else {
+                    continue
+                }
+                addableMembers.insert(address)
+            }
+        }
+        guard !addableMembers.isEmpty else {
+            return nil
+        }
+        let droppedMembersInfo = DroppedMembersInfo(groupThread: groupThread,
+                                                    addableMembers: addableMembers)
+        return droppedMembersInfo
     }
 }

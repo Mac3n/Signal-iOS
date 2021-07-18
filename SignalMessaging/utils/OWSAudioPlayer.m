@@ -1,5 +1,5 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 #import "OWSAudioPlayer.h"
@@ -23,7 +23,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 @implementation OWSAudioPlayerDelegateStub
 
-- (void)setAudioProgress:(CGFloat)progress duration:(CGFloat)duration
+- (void)setAudioProgress:(NSTimeInterval)progress duration:(NSTimeInterval)duration
 {
     // Do nothing;
 }
@@ -48,23 +48,15 @@ NS_ASSUME_NONNULL_BEGIN
 - (instancetype)initWithMediaUrl:(NSURL *)mediaUrl
                    audioBehavior:(OWSAudioBehavior)audioBehavior
 {
-    return [self initWithMediaUrl:mediaUrl audioBehavior:audioBehavior delegate:[OWSAudioPlayerDelegateStub new]];
-}
-
-- (instancetype)initWithMediaUrl:(NSURL *)mediaUrl
-                        audioBehavior:(OWSAudioBehavior)audioBehavior
-                        delegate:(id<OWSAudioPlayerDelegate>)delegate
-{
     self = [super init];
     if (!self) {
         return self;
     }
 
     OWSAssertDebug(mediaUrl);
-    OWSAssertDebug(delegate);
 
     _mediaUrl = mediaUrl;
-    _delegate = delegate;
+    _delegate = [OWSAudioPlayerDelegateStub new];
 
     NSString *audioActivityDescription = [NSString stringWithFormat:@"%@ %@", self.logTag, self.mediaUrl];
     _audioActivity = [[OWSAudioActivity alloc] initWithAudioDescription:audioActivityDescription behavior:audioBehavior];
@@ -86,14 +78,12 @@ NS_ASSUME_NONNULL_BEGIN
     [self stop];
 }
 
-#pragma mark - Dependencies
-
-- (OWSAudioSession *)audioSession
+- (NSTimeInterval)duration
 {
-    return Environment.shared.audioSession;
+    return self.audioPlayer.duration;
 }
 
-#pragma mark
+#pragma mark -
 
 - (void)applicationDidEnterBackground:(NSNotification *)notification
 {
@@ -192,11 +182,12 @@ NS_ASSUME_NONNULL_BEGIN
     self.delegate.audioPlaybackState = AudioPlaybackState_Playing;
     [self.audioPlayer play];
     [self.audioPlayerPoller invalidate];
-    self.audioPlayerPoller = [NSTimer weakScheduledTimerWithTimeInterval:.05f
-                                                                  target:self
-                                                                selector:@selector(audioPlayerUpdated:)
-                                                                userInfo:nil
-                                                                 repeats:YES];
+    self.audioPlayerPoller = [NSTimer weakTimerWithTimeInterval:.05f
+                                                         target:self
+                                                       selector:@selector(audioPlayerUpdated:)
+                                                       userInfo:nil
+                                                        repeats:YES];
+    [[NSRunLoop mainRunLoop] addTimer:self.audioPlayerPoller forMode:NSRunLoopCommonModes];
 
     // Prevent device from sleeping while playing audio.
     [DeviceSleepManager.shared addBlockWithBlockObject:self];
@@ -209,7 +200,7 @@ NS_ASSUME_NONNULL_BEGIN
     self.delegate.audioPlaybackState = AudioPlaybackState_Paused;
     [self.audioPlayer pause];
     [self.audioPlayerPoller invalidate];
-    [self.delegate setAudioProgress:(CGFloat)[self.audioPlayer currentTime] duration:(CGFloat)[self.audioPlayer duration]];
+    [self.delegate setAudioProgress:self.audioPlayer.currentTime duration:self.audioPlayer.duration];
     [self updateNowPlayingInfo];
 
     [self endAudioActivities];
@@ -256,8 +247,6 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (void)stop
 {
-    OWSAssertIsOnMainThread();
-
     self.delegate.audioPlaybackState = AudioPlaybackState_Stopped;
     [self.audioPlayer pause];
     [self.audioPlayerPoller invalidate];
@@ -286,10 +275,11 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (void)setCurrentTime:(NSTimeInterval)currentTime
 {
+    [self setupAudioPlayer];
+
     self.audioPlayer.currentTime = currentTime;
 
-    [self.delegate setAudioProgress:(CGFloat)[self.audioPlayer currentTime]
-                           duration:(CGFloat)[self.audioPlayer duration]];
+    [self.delegate setAudioProgress:self.audioPlayer.currentTime duration:self.audioPlayer.duration];
 
     [self updateNowPlayingInfo];
 }
@@ -303,7 +293,7 @@ NS_ASSUME_NONNULL_BEGIN
     OWSAssertDebug(self.audioPlayer);
     OWSAssertDebug(self.audioPlayerPoller);
 
-    [self.delegate setAudioProgress:(CGFloat)[self.audioPlayer currentTime] duration:(CGFloat)[self.audioPlayer duration]];
+    [self.delegate setAudioProgress:self.audioPlayer.currentTime duration:self.audioPlayer.duration];
 }
 
 - (void)audioPlayerDidFinishPlaying:(AVAudioPlayer *)player successfully:(BOOL)flag

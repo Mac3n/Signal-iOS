@@ -1,5 +1,5 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 import Foundation
@@ -54,7 +54,7 @@ extension DeviceTransferService {
 
         // Attachments, Avatars, and Stickers
 
-        let foldersToTransfer = ["Attachments/", "ProfileAvatars/", "StickerManager/"]
+        let foldersToTransfer = ["Attachments/", "ProfileAvatars/", "StickerManager/", "Wallpapers/", "Library/Sounds/"]
         let filesToTransfer = try foldersToTransfer.flatMap { folder -> [String] in
             let url = URL(fileURLWithPath: folder, relativeTo: DeviceTransferService.appSharedDataDirectory)
             return try OWSFileSystem.recursiveFilesInDirectory(url.path)
@@ -122,13 +122,19 @@ extension DeviceTransferService {
             throw OWSAssertionError("path contains invalid character: *")
         }
 
-        guard !path.contains("~") else {
-            throw OWSAssertionError("path starts with invalid character: .")
+        let components = path.components(separatedBy: "/")
+
+        guard components.first != "~" else {
+            throw OWSAssertionError("path starts with invalid component: ~")
         }
 
-        for component in path.components(separatedBy: "/") {
-            guard !component.starts(with: ".") else {
-                throw OWSAssertionError("path starts with invalid character: .")
+        for component in components {
+            guard component != "." else {
+                throw OWSAssertionError("path contains invalid component: .")
+            }
+
+            guard component != ".." else {
+                throw OWSAssertionError("path contains invalid component: ..")
             }
         }
 

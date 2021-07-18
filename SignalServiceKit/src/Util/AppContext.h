@@ -1,5 +1,5 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 NS_ASSUME_NONNULL_BEGIN
@@ -47,6 +47,7 @@ NSString *NSStringForUIApplicationState(UIApplicationState value);
 
 @property (nonatomic, readonly) BOOL isMainApp;
 @property (nonatomic, readonly) BOOL isMainAppAndActive;
+@property (nonatomic, readonly) BOOL isNSE;
 
 // Whether the user is using a right-to-left language like Arabic.
 @property (nonatomic, readonly) BOOL isRTL;
@@ -143,6 +144,8 @@ NSString *NSStringForUIApplicationState(UIApplicationState value);
 @property (nonatomic, readonly) BOOL didLastLaunchNotTerminate;
 
 @property (nonatomic, readonly) NSString *debugLogsDirPath;
+
+@property (nonatomic, readonly) BOOL hasActiveCall;
 
 @end
 

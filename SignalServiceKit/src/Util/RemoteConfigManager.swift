@@ -1,5 +1,5 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 import Foundation
@@ -13,12 +13,14 @@ public class RemoteConfig: BaseFlags {
     private let isEnabledFlags: [String: Bool]
     private let valueFlags: [String: AnyObject]
     private let researchMegaphone: Bool
+    private let donateMegaphone: Bool
 
     init(isEnabledFlags: [String: Bool],
          valueFlags: [String: AnyObject]) {
         self.isEnabledFlags = isEnabledFlags
         self.valueFlags = valueFlags
-        self.researchMegaphone = Self.isResearchMegaphoneEnabled(valueFlags: valueFlags)
+        self.researchMegaphone = Self.isCountryCodeBucketEnabled(.researchMegaphone, valueFlags: valueFlags)
+        self.donateMegaphone = Self.isCountryCodeBucketEnabled(.donateMegaphone, valueFlags: valueFlags)
     }
 
     @objc
@@ -140,28 +142,93 @@ public class RemoteConfig: BaseFlags {
     }
 
     @objc
+    public static var cdsSyncInterval: TimeInterval {
+        interval(.cdsSyncInterval, defaultInterval: kDayInterval * 2)
+    }
+
+    @objc
+    public static var automaticSessionResetKillSwitch: Bool {
+        return isEnabled(.automaticSessionResetKillSwitch)
+    }
+
+    @objc
+    public static var automaticSessionResetAttemptInterval: TimeInterval {
+        interval(.automaticSessionResetAttemptInterval, defaultInterval: kHourInterval)
+    }
+
+    @objc
+    public static var reactiveProfileKeyAttemptInterval: TimeInterval {
+        interval(.reactiveProfileKeyAttemptInterval, defaultInterval: kHourInterval)
+    }
+
+    @objc
     public static var researchMegaphone: Bool {
-        guard let remoteConfig = SSKEnvironment.shared.remoteConfigManager.cachedConfig else { return false }
+        guard let remoteConfig = Self.remoteConfigManager.cachedConfig else { return false }
         return remoteConfig.researchMegaphone
     }
 
-    private static func isResearchMegaphoneEnabled(valueFlags: [String: AnyObject]) -> Bool {
-        let rawFlag = Flags.SupportedValuesFlags.researchMegaphone.rawFlag
+    @objc
+    public static var donateMegaphone: Bool {
+        guard let remoteConfig = Self.remoteConfigManager.cachedConfig else { return false }
+        return remoteConfig.donateMegaphone
+    }
 
+    @objc
+    public static var donateMegaphoneSnoozeInterval: TimeInterval {
+        interval(.donateMegaphoneSnoozeInterval, defaultInterval: kMonthInterval * 6)
+    }
+
+    @objc
+    public static var paymentsResetKillSwitch: Bool {
+        isEnabled(.paymentsResetKillSwitch)
+    }
+
+    @objc
+    public static var giphySendAsMP4: Bool {
+        isEnabled(.giphySendAsMP4)
+    }
+
+    @objc
+    public static var viewedReceiptSending: Bool {
+        DebugFlags.forceViewedReceiptSending || isEnabled(.viewedReceiptSending)
+    }
+
+    @objc
+    public static var notificationServiceExtension: Bool {
+        // The CallKit APIs for the NSE are only available from iOS 14.5 and on.
+        guard #available(iOS 14.5, *) else { return false }
+        return DebugFlags.forceNotificationServiceExtension || isEnabled(.notificationServiceExtension)
+    }
+
+    // MARK: -
+
+    private static func interval(
+        _ flag: Flags.SupportedValuesFlags,
+        defaultInterval: TimeInterval
+    ) -> TimeInterval {
+        guard let intervalString: String = value(flag),
+              let interval = TimeInterval(intervalString) else {
+            return defaultInterval
+        }
+        return interval
+    }
+
+    private static func isCountryCodeBucketEnabled(_ flag: Flags.SupportedValuesFlags, valueFlags: [String: AnyObject]) -> Bool {
+        let rawFlag = flag.rawFlag
         guard let value = valueFlags[rawFlag] as? String else { return false }
 
         guard !value.isEmpty else { return false }
 
         // The value should always be a comma-separated list of country codes colon-separated
-        // from how many buckets out of 1 million should be enabled to see the research
-        // megaphone in that country code. There will also optional be a wildcard "*" bucket
-        // that any unspecified country codes should use. If neither the local country code
-        // or the wildcard is specified, we assume the megaphone is not enabled.
+        // from how many buckets out of 1 million should be enabled in that country code. There
+        // will also optional be a wildcard "*" bucket that any unspecified country codes should
+        // use. If neither the local country code or the wildcard is specified, we assume the
+        // value is not enabled.
         let countEnabledPerCountryCode = value
             .components(separatedBy: ",")
             .reduce(into: [String: UInt64]()) { result, value in
                 let components = value.components(separatedBy: ":")
-                guard components.count == 2 else { return owsFailDebug("Invalid research megaphone value \(value)")}
+                guard components.count == 2 else { return owsFailDebug("Invalid \(rawFlag) value \(value)")}
                 let countryCode = components[0]
                 let countEnabled = UInt64(components[1])
                 result[countryCode] = countEnabled
@@ -169,7 +236,7 @@ public class RemoteConfig: BaseFlags {
 
         guard !countEnabledPerCountryCode.isEmpty else { return false }
 
-        guard let localE164 = TSAccountManager.shared().localNumber,
+        guard let localE164 = TSAccountManager.shared.localNumber,
             let localCountryCode = PhoneNumber(fromE164: localE164)?.getCountryCode()?.stringValue else {
                 owsFailDebug("Missing local number")
                 return false
@@ -179,16 +246,14 @@ public class RemoteConfig: BaseFlags {
         let wildcardCountEnabled = countEnabledPerCountryCode["*"]
 
         if let countEnabled = localCountEnabled ?? wildcardCountEnabled {
-            return isBucketEnabled(key: rawFlag, countEnabled: countEnabled, bucketSize: 1000000)
+            return isBucketEnabled(key: rawFlag, countEnabled: countEnabled, bucketSize: 1_000_000)
         } else {
             return false
         }
     }
 
-    // MARK: -
-
     private static func isBucketEnabled(key: String, countEnabled: UInt64, bucketSize: UInt64) -> Bool {
-        guard let uuid = TSAccountManager.shared().localUuid else {
+        guard let uuid = TSAccountManager.shared.localUuid else {
             owsFailDebug("Missing local UUID")
             return false
         }
@@ -227,14 +292,14 @@ public class RemoteConfig: BaseFlags {
     }
 
     private static func isEnabled(_ flag: Flags.SupportedIsEnabledFlags, defaultValue: Bool = false) -> Bool {
-        guard let remoteConfig = SSKEnvironment.shared.remoteConfigManager.cachedConfig else {
+        guard let remoteConfig = Self.remoteConfigManager.cachedConfig else {
             return defaultValue
         }
         return remoteConfig.isEnabledFlags[flag.rawFlag] ?? defaultValue
     }
 
     private static func value<T>(_ flag: Flags.SupportedValuesFlags) -> T? {
-        guard let remoteConfig = SSKEnvironment.shared.remoteConfigManager.cachedConfig else {
+        guard let remoteConfig = Self.remoteConfigManager.cachedConfig else {
             return nil
         }
         guard let remoteObject = remoteConfig.valueFlags[flag.rawFlag] else {
@@ -249,7 +314,7 @@ public class RemoteConfig: BaseFlags {
 
     @objc
     public static func logFlags() {
-        guard let remoteConfig = SSKEnvironment.shared.remoteConfigManager.cachedConfig else {
+        guard let remoteConfig = Self.remoteConfigManager.cachedConfig else {
             Logger.info("No cached config.")
             return
         }
@@ -321,6 +386,11 @@ private struct Flags {
         case groupsV2manualMigrations
         case groupsV2blockingMigrations
         case groupCallingKillSwitch
+        case automaticSessionResetKillSwitch
+        case paymentsResetKillSwitch
+        case giphySendAsMP4
+        case viewedReceiptSending
+        case notificationServiceExtension
     }
 
     // Values defined in this array remain set once they are
@@ -339,6 +409,11 @@ private struct Flags {
         case groupsV2MaxGroupSizeHardLimit
         case clientExpiration
         case researchMegaphone
+        case cdsSyncInterval
+        case automaticSessionResetAttemptInterval
+        case donateMegaphone
+        case donateMegaphoneSnoozeInterval
+        case reactiveProfileKeyAttemptInterval
     }
 }
 
@@ -358,6 +433,7 @@ private extension FlagType {
         case "groupsV2MaxGroupSizeRecommended": return "global.groupsv2.maxGroupSize"
         case "groupsV2MaxGroupSizeHardLimit": return "global.groupsv2.groupSizeHardLimit"
         case "researchMegaphone": return "research.megaphone.1"
+        case "cdsSyncInterval": return "cds.syncInterval.seconds"
         default: return Flags.prefix + rawValue
         }
     }
@@ -387,18 +463,6 @@ public class StubbableRemoteConfigManager: NSObject, RemoteConfigManager {
 
 @objc
 public class ServiceRemoteConfigManager: NSObject, RemoteConfigManager {
-
-    // MARK: - Dependencies
-
-    private var databaseStorage: SDSDatabaseStorage {
-        return SDSDatabaseStorage.shared
-    }
-
-    private var tsAccountManager: TSAccountManager {
-        return SSKEnvironment.shared.tsAccountManager
-    }
-
-    private let serviceClient: SignalServiceClient = SignalServiceRestClient()
 
     let keyValueStore: SDSKeyValueStore = SDSKeyValueStore(collection: "RemoteConfigManager")
 
@@ -431,7 +495,7 @@ public class ServiceRemoteConfigManager: NSObject, RemoteConfigManager {
         // The fetched config won't take effect until the *next* launch.
         // That's not ideal, but we can't risk changing configs in the middle
         // of an app lifetime.
-        AppReadiness.runNowOrWhenAppDidBecomeReadyPolite {
+        AppReadiness.runNowOrWhenMainAppDidBecomeReadyAsync {
             guard self.tsAccountManager.isRegistered else {
                 return
             }

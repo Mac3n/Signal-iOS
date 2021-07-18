@@ -1,5 +1,5 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 import Foundation
@@ -8,56 +8,45 @@ import PromiseKit
 @objc(OWSStorageServiceManager)
 public class StorageServiceManager: NSObject, StorageServiceManagerProtocol {
 
+    // TODO: We could convert this into a SSKEnvironment accessor so that we
+    // can replace it in tests.
     @objc
     public static let shared = StorageServiceManager()
-
-    // MARK: - Dependencies
-
-    var tsAccountManager: TSAccountManager {
-        return SSKEnvironment.shared.tsAccountManager
-    }
-
-    var groupsV2: GroupsV2 {
-        return SSKEnvironment.shared.groupsV2
-    }
-
-    var databaseStorage: SDSDatabaseStorage {
-        return SDSDatabaseStorage.shared
-    }
-
-    // MARK: -
 
     override init() {
         super.init()
 
         SwiftSingletons.register(self)
 
-        AppReadiness.runNowOrWhenAppWillBecomeReady {
-            self.cleanUpUnknownData()
-        }
+        if CurrentAppContext().hasUI {
+            AppReadiness.runNowOrWhenAppWillBecomeReady {
+                self.cleanUpUnknownData()
+            }
 
-        AppReadiness.runNowOrWhenAppDidBecomeReady {
-            NotificationCenter.default.addObserver(
-                self,
-                selector: #selector(self.willResignActive),
-                name: .OWSApplicationWillResignActive,
-                object: nil
-            )
-        }
+            AppReadiness.runNowOrWhenAppDidBecomeReadySync {
+                NotificationCenter.default.addObserver(
+                    self,
+                    selector: #selector(self.willResignActive),
+                    name: .OWSApplicationWillResignActive,
+                    object: nil
+                )
+            }
 
-        AppReadiness.runNowOrWhenAppDidBecomeReadyPolite {
-            guard self.tsAccountManager.isRegisteredAndReady else { return }
+            AppReadiness.runNowOrWhenMainAppDidBecomeReadyAsync {
+                guard self.tsAccountManager.isRegisteredAndReady else { return }
 
-            // Schedule a restore. This will do nothing unless we've never
-            // registered a manifest before.
-            self.restoreOrCreateManifestIfNecessary()
+                // Schedule a restore. This will do nothing unless we've never
+                // registered a manifest before.
+                self.restoreOrCreateManifestIfNecessary()
 
-            // If we have any pending changes since we last launch, back them up now.
-            self.backupPendingChanges()
+                // If we have any pending changes since we last launch, back them up now.
+                self.backupPendingChanges()
+            }
         }
     }
 
-    @objc private func willResignActive() {
+    @objc
+    private func willResignActive() {
         // If we have any pending changes, start a back up immediately
         // to try and make sure the service doesn't get stale. If for
         // some reason we aren't able to successfully complete this backup
@@ -224,29 +213,10 @@ public class StorageServiceManager: NSObject, StorageServiceManagerProtocol {
 
 @objc(OWSStorageServiceOperation)
 class StorageServiceOperation: OWSOperation {
-    // MARK: - Dependencies
-
-    private static var databaseStorage: SDSDatabaseStorage {
-        return .shared
-    }
-
-    private var databaseStorage: SDSDatabaseStorage {
-        return .shared
-    }
 
     public static var keyValueStore: SDSKeyValueStore {
         return SDSKeyValueStore(collection: "kOWSStorageServiceOperation_IdentifierMap")
     }
-
-    private var groupsV2: GroupsV2 {
-        return SSKEnvironment.shared.groupsV2
-    }
-
-    private var groupV2Updates: GroupV2UpdatesSwift {
-        return SSKEnvironment.shared.groupV2Updates as! GroupV2UpdatesSwift
-    }
-
-    // MARK: -
 
     override var description: String {
         return "StorageServiceOperation.\(mode)"
@@ -321,7 +291,7 @@ class StorageServiceOperation: OWSOperation {
         return BlockOperation {
             databaseStorage.write { transaction in
                 let updatedAccountIds = updatedAddresses.map { address in
-                    OWSAccountIdFinder().ensureAccountId(forAddress: address, transaction: transaction)
+                    OWSAccountIdFinder.ensureAccountId(forAddress: address, transaction: transaction)
                 }
 
                 recordPendingUpdates(updatedAccountIds: updatedAccountIds, transaction: transaction)
@@ -342,7 +312,7 @@ class StorageServiceOperation: OWSOperation {
 
         var state = State.current(transaction: transaction)
 
-        let localAccountId = TSAccountManager.shared().localAccountId(transaction: transaction)
+        let localAccountId = TSAccountManager.shared.localAccountId(transaction: transaction)
 
         for accountId in updatedAccountIds {
             if accountId == localAccountId {
@@ -360,7 +330,7 @@ class StorageServiceOperation: OWSOperation {
         return BlockOperation {
             databaseStorage.write { transaction in
                 let deletedAccountIds = deletedAddresses.map { address in
-                    OWSAccountIdFinder().ensureAccountId(forAddress: address, transaction: transaction)
+                    OWSAccountIdFinder.ensureAccountId(forAddress: address, transaction: transaction)
                 }
 
                 recordPendingDeletions(deletedAccountIds: deletedAccountIds, transaction: transaction)
@@ -381,7 +351,7 @@ class StorageServiceOperation: OWSOperation {
 
         var state = State.current(transaction: transaction)
 
-        let localAccountId = TSAccountManager.shared().localAccountId(transaction: transaction)
+        let localAccountId = TSAccountManager.shared.localAccountId(transaction: transaction)
 
         for accountId in deletedAccountIds {
             if accountId == localAccountId {
@@ -796,7 +766,7 @@ class StorageServiceOperation: OWSOperation {
                 }
 
                 // Notify our other devices that the storage manifest has changed.
-                OWSSyncManager.shared().sendFetchLatestStorageManifestSyncMessage()
+                OWSSyncManager.shared.sendFetchLatestStorageManifestSyncMessage()
 
                 return self.reportSuccess()
             }
@@ -850,7 +820,7 @@ class StorageServiceOperation: OWSOperation {
                 if case .manifestDecryptionFailed(let previousManifestVersion) = storageError {
                     // If this is the primary device, throw everything away and re-encrypt
                     // the social graph with the keys we have locally.
-                    if TSAccountManager.shared().isPrimaryDevice {
+                    if TSAccountManager.shared.isPrimaryDevice {
                         Logger.info("Manifest decryption failed, recreating manifest.")
                         return self.createNewManifest(version: previousManifestVersion + 1)
                     }
@@ -863,7 +833,7 @@ class StorageServiceOperation: OWSOperation {
                         // Clear out the key, it's no longer valid. This will prevent us
                         // from trying to backup again until the sync response is received.
                         KeyBackupService.storeSyncedKey(type: .storageService, data: nil, transaction: transaction)
-                        OWSSyncManager.shared().sendKeysSyncRequestMessage(transaction: transaction)
+                        OWSSyncManager.shared.sendKeysSyncRequestMessage(transaction: transaction)
                     }
                 }
 
@@ -1170,7 +1140,7 @@ class StorageServiceOperation: OWSOperation {
                 if case .itemDecryptionFailed = storageError {
                     // If this is the primary device, throw everything away and re-encrypt
                     // the social graph with the keys we have locally.
-                    if TSAccountManager.shared().isPrimaryDevice {
+                    if TSAccountManager.shared.isPrimaryDevice {
                         Logger.info("Item decryption failed, recreating manifest.")
                         return self.createNewManifest(version: manifest.version + 1)
                     }
@@ -1183,7 +1153,7 @@ class StorageServiceOperation: OWSOperation {
                         // Clear out the key, it's no longer valid. This will prevent us
                         // from trying to backup again until the sync response is received.
                         KeyBackupService.storeSyncedKey(type: .storageService, data: nil, transaction: transaction)
-                        OWSSyncManager.shared().sendKeysSyncRequestMessage(transaction: transaction)
+                        OWSSyncManager.shared.sendKeysSyncRequestMessage(transaction: transaction)
                     }
                 }
 
@@ -1209,7 +1179,7 @@ class StorageServiceOperation: OWSOperation {
     private func cleanUpUnknownIdentifiers(transaction: SDSAnyWriteTransaction) {
         // We may have learned of new record types; if so we should
         // cull them from the unknownIdentifiersTypeMap on launch.
-        var knownTypes: [StorageServiceProtoManifestRecordKeyType] = [
+        let knownTypes: [StorageServiceProtoManifestRecordKeyType] = [
             .contact,
             .groupv1,
             .groupv2,
@@ -1355,7 +1325,7 @@ class StorageServiceOperation: OWSOperation {
             .accountIdToIdentifierMap
             .forwardKeys
             .filter { accountId in
-                guard let address = OWSAccountIdFinder().address(
+                guard let address = OWSAccountIdFinder.address(
                     forAccountId: accountId,
                     transaction: transaction
                     ) else { return true }

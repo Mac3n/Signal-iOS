@@ -1,11 +1,11 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 import Foundation
 import SignalRingRTC
 
-protocol GroupCallMemberViewDelegate: class {
+protocol GroupCallMemberViewDelegate: AnyObject {
     func memberView(_: GroupCallMemberView, userRequestedInfoAboutError: GroupCallMemberView.ErrorState)
 }
 
@@ -212,10 +212,6 @@ class GroupCallLocalMemberView: GroupCallMemberView {
             return owsFailDebug("missing local address")
         }
 
-        let conversationColorName = databaseStorage.uiRead { transaction in
-            return self.contactsManager.conversationColorName(for: localAddress, transaction: transaction)
-        }
-
         backgroundAvatarView.image = profileManager.localProfileAvatarImage()
 
         muteIndicatorImage.isHidden = isFullScreen || !call.groupCall.isOutgoingAudioMuted
@@ -225,9 +221,7 @@ class GroupCallLocalMemberView: GroupCallMemberView {
 
         videoOffIndicatorWidthConstraint.constant = videoOffIndicatorWidth
 
-        noVideoView.backgroundColor = OWSConversationColor.conversationColorOrDefault(
-            colorName: conversationColorName
-        ).themeColor
+        noVideoView.backgroundColor = ChatColors.avatarColor(forAddress: localAddress)
 
         layer.cornerRadius = isFullScreen ? 0 : 10
         clipsToBounds = true
@@ -248,7 +242,8 @@ class GroupCallRemoteMemberView: GroupCallMemberView {
 
     var deferredReconfigTimer: Timer?
     let errorView = GroupCallErrorView()
-    let avatarView = AvatarImageView()
+    let avatarView = ConversationAvatarView(diameterPoints: 0,
+                                            localUserDisplayMode: .asUser)
     let spinner = UIActivityIndicatorView(style: .whiteLarge)
     lazy var avatarWidthConstraint = avatarView.autoSetDimension(.width, toSize: CGFloat(avatarDiameter))
 
@@ -310,40 +305,29 @@ class GroupCallRemoteMemberView: GroupCallMemberView {
         hasBeenConfigured = true
         deferredReconfigTimer?.invalidate()
 
-        let (profileImage, conversationColorName) = databaseStorage.uiRead { transaction in
-            return (
-                self.contactsManager.image(for: device.address, transaction: transaction),
-                self.contactsManager.conversationColorName(for: device.address, transaction: transaction)
-            )
+        let profileImage = databaseStorage.read { transaction -> UIImage? in
+            avatarView.configure(address: device.address,
+                                 diameterPoints: avatarDiameter,
+                                 localUserDisplayMode: .asUser,
+                                 transaction: transaction)
+            avatarWidthConstraint.constant = CGFloat(avatarDiameter)
+
+            return self.contactsManagerImpl.avatarImage(forAddress: device.address,
+                                                        shouldValidate: true,
+                                                        transaction: transaction)
         }
 
         backgroundAvatarView.image = profileImage
-
-        let avatarBuilder = OWSContactAvatarBuilder(
-            address: device.address,
-            colorName: conversationColorName,
-            diameter: avatarDiameter
-        )
-
-        if device.address.isLocalAddress {
-            avatarView.image = OWSProfileManager.shared().localProfileAvatarImage() ?? avatarBuilder.buildDefaultImage()
-        } else {
-            avatarView.image = avatarBuilder.build()
-        }
-
-        avatarWidthConstraint.constant = CGFloat(avatarDiameter)
 
         muteIndicatorImage.isHidden = mode == .speaker || device.audioMuted != true
         muteLeadingConstraint.constant = muteInsets
         muteBottomConstraint.constant = -muteInsets
         muteHeightConstraint.constant = muteHeight
 
-        noVideoView.backgroundColor = OWSConversationColor.conversationColorOrDefault(
-            colorName: conversationColorName
-        ).themeColor
+        noVideoView.backgroundColor = ChatColors.avatarColor(forAddress: device.address)
 
         configureRemoteVideo(device: device)
-        let isRemoteDeviceBlocked = OWSBlockingManager.shared().isAddressBlocked(device.address)
+        let isRemoteDeviceBlocked = blockingManager.isAddressBlocked(device.address)
         let errorDeferralInterval: TimeInterval = 5.0
         let addedDate = Date(millisecondsSince1970: device.addedTime)
         let connectionDuration = -addedDate.timeIntervalSinceNow
@@ -418,8 +402,8 @@ class GroupCallRemoteMemberView: GroupCallMemberView {
         let newVideoView = callService.groupCallRemoteVideoManager.remoteVideoView(for: device, mode: mode)
         insertSubview(newVideoView, belowSubview: muteIndicatorImage)
         newVideoView.frame = bounds
+        newVideoView.isScreenShare = device.sharingScreen == true
         videoView = newVideoView
-
         owsAssertDebug(videoView != nil, "Missing remote video view")
     }
 

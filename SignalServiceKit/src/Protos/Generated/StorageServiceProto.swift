@@ -1,5 +1,5 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 import Foundation
@@ -1267,6 +1267,9 @@ public struct StorageServiceProtoContactRecord: Codable, CustomDebugStringConver
         if hasMarkedUnread {
             builder.setMarkedUnread(markedUnread)
         }
+        if hasMutedUntilTimestamp {
+            builder.setMutedUntilTimestamp(mutedUntilTimestamp)
+        }
         if let _value = unknownFields {
             builder.setUnknownFields(_value)
         }
@@ -1367,6 +1370,10 @@ public struct StorageServiceProtoContactRecord: Codable, CustomDebugStringConver
 
         public mutating func setMarkedUnread(_ valueParam: Bool) {
             proto.markedUnread = valueParam
+        }
+
+        public mutating func setMutedUntilTimestamp(_ valueParam: UInt64) {
+            proto.mutedUntilTimestamp = valueParam
         }
 
         public mutating func setUnknownFields(_ unknownFields: SwiftProtobuf.UnknownStorage) {
@@ -1500,49 +1507,17 @@ public struct StorageServiceProtoContactRecord: Codable, CustomDebugStringConver
         return true
     }
 
+    public var mutedUntilTimestamp: UInt64 {
+        return proto.mutedUntilTimestamp
+    }
+    public var hasMutedUntilTimestamp: Bool {
+        return true
+    }
+
     public var hasValidService: Bool {
         return serviceAddress != nil
     }
-    public var serviceAddress: SignalServiceAddress? {
-        guard hasServiceE164 || hasServiceUuid else { return nil }
-
-        let uuidString: String? = {
-            guard hasServiceUuid else { return nil }
-
-            guard let serviceUuid = serviceUuid else {
-                owsFailDebug("serviceUuid was unexpectedly nil")
-                return nil
-            }
-
-            return serviceUuid
-        }()
-
-        let phoneNumber: String? = {
-            guard hasServiceE164 else {
-                return nil
-            }
-
-            guard let serviceE164 = serviceE164 else {
-                owsFailDebug("serviceE164 was unexpectedly nil")
-                return nil
-            }
-
-            guard !serviceE164.isEmpty else {
-                owsFailDebug("serviceE164 was unexpectedly empty")
-                return nil
-            }
-
-            return serviceE164
-        }()
-
-        let address = SignalServiceAddress(uuidString: uuidString, phoneNumber: phoneNumber, trustLevel: .high)
-        guard address.isValid else {
-            owsFailDebug("address was unexpectedly invalid")
-            return nil
-        }
-
-        return address
-    }
+    public let serviceAddress: SignalServiceAddress?
 
     public var hasUnknownFields: Bool {
         return !proto.unknownFields.data.isEmpty
@@ -1554,6 +1529,51 @@ public struct StorageServiceProtoContactRecord: Codable, CustomDebugStringConver
 
     private init(proto: StorageServiceProtos_ContactRecord) {
         self.proto = proto
+
+        let hasServiceUuid = !proto.serviceUuid.isEmpty
+        let hasServiceE164 = !proto.serviceE164.isEmpty
+        let serviceUuid: String? = proto.serviceUuid
+        let serviceE164: String? = proto.serviceE164
+        self.serviceAddress = {
+            guard hasServiceE164 || hasServiceUuid else { return nil }
+
+            let uuidString: String? = {
+                guard hasServiceUuid else { return nil }
+
+                guard let serviceUuid = serviceUuid else {
+                    owsFailDebug("serviceUuid was unexpectedly nil")
+                    return nil
+                }
+
+                return serviceUuid
+            }()
+
+            let phoneNumber: String? = {
+                guard hasServiceE164 else {
+                    return nil
+                }
+
+                guard let serviceE164 = serviceE164 else {
+                    owsFailDebug("serviceE164 was unexpectedly nil")
+                    return nil
+                }
+
+                guard !serviceE164.isEmpty else {
+                    owsFailDebug("serviceE164 was unexpectedly empty")
+                    return nil
+                }
+
+                return serviceE164
+            }()
+
+            let address = SignalServiceAddress(uuidString: uuidString, phoneNumber: phoneNumber, trustLevel: .high)
+            guard address.isValid else {
+                owsFailDebug("address was unexpectedly invalid")
+                return nil
+            }
+
+            return address
+        }()
     }
 
     public func serializedData() throws -> Data {
@@ -1629,6 +1649,9 @@ public struct StorageServiceProtoGroupV1Record: Codable, CustomDebugStringConver
         if hasMarkedUnread {
             builder.setMarkedUnread(markedUnread)
         }
+        if hasMutedUntilTimestamp {
+            builder.setMutedUntilTimestamp(mutedUntilTimestamp)
+        }
         if let _value = unknownFields {
             builder.setUnknownFields(_value)
         }
@@ -1670,6 +1693,10 @@ public struct StorageServiceProtoGroupV1Record: Codable, CustomDebugStringConver
 
         public mutating func setMarkedUnread(_ valueParam: Bool) {
             proto.markedUnread = valueParam
+        }
+
+        public mutating func setMutedUntilTimestamp(_ valueParam: UInt64) {
+            proto.mutedUntilTimestamp = valueParam
         }
 
         public mutating func setUnknownFields(_ unknownFields: SwiftProtobuf.UnknownStorage) {
@@ -1714,6 +1741,13 @@ public struct StorageServiceProtoGroupV1Record: Codable, CustomDebugStringConver
         return proto.markedUnread
     }
     public var hasMarkedUnread: Bool {
+        return true
+    }
+
+    public var mutedUntilTimestamp: UInt64 {
+        return proto.mutedUntilTimestamp
+    }
+    public var hasMutedUntilTimestamp: Bool {
         return true
     }
 
@@ -1807,6 +1841,9 @@ public struct StorageServiceProtoGroupV2Record: Codable, CustomDebugStringConver
         if hasMarkedUnread {
             builder.setMarkedUnread(markedUnread)
         }
+        if hasMutedUntilTimestamp {
+            builder.setMutedUntilTimestamp(mutedUntilTimestamp)
+        }
         if let _value = unknownFields {
             builder.setUnknownFields(_value)
         }
@@ -1848,6 +1885,10 @@ public struct StorageServiceProtoGroupV2Record: Codable, CustomDebugStringConver
 
         public mutating func setMarkedUnread(_ valueParam: Bool) {
             proto.markedUnread = valueParam
+        }
+
+        public mutating func setMutedUntilTimestamp(_ valueParam: UInt64) {
+            proto.mutedUntilTimestamp = valueParam
         }
 
         public mutating func setUnknownFields(_ unknownFields: SwiftProtobuf.UnknownStorage) {
@@ -1892,6 +1933,13 @@ public struct StorageServiceProtoGroupV2Record: Codable, CustomDebugStringConver
         return proto.markedUnread
     }
     public var hasMarkedUnread: Bool {
+        return true
+    }
+
+    public var mutedUntilTimestamp: UInt64 {
+        return proto.mutedUntilTimestamp
+    }
+    public var hasMutedUntilTimestamp: Bool {
         return true
     }
 
@@ -2261,6 +2309,143 @@ extension StorageServiceProtoAccountRecordPinnedConversation.StorageServiceProto
 
 #endif
 
+// MARK: - StorageServiceProtoAccountRecordPayments
+
+public struct StorageServiceProtoAccountRecordPayments: Codable, CustomDebugStringConvertible {
+
+    // MARK: - StorageServiceProtoAccountRecordPaymentsBuilder
+
+    public static func builder() -> StorageServiceProtoAccountRecordPaymentsBuilder {
+        return StorageServiceProtoAccountRecordPaymentsBuilder()
+    }
+
+    // asBuilder() constructs a builder that reflects the proto's contents.
+    public func asBuilder() -> StorageServiceProtoAccountRecordPaymentsBuilder {
+        var builder = StorageServiceProtoAccountRecordPaymentsBuilder()
+        if hasEnabled {
+            builder.setEnabled(enabled)
+        }
+        if let _value = paymentsEntropy {
+            builder.setPaymentsEntropy(_value)
+        }
+        if let _value = unknownFields {
+            builder.setUnknownFields(_value)
+        }
+        return builder
+    }
+
+    public struct StorageServiceProtoAccountRecordPaymentsBuilder {
+
+        private var proto = StorageServiceProtos_AccountRecord.Payments()
+
+        fileprivate init() {}
+
+        public mutating func setEnabled(_ valueParam: Bool) {
+            proto.enabled = valueParam
+        }
+
+        @available(swift, obsoleted: 1.0)
+        public mutating func setPaymentsEntropy(_ valueParam: Data?) {
+            guard let valueParam = valueParam else { return }
+            proto.paymentsEntropy = valueParam
+        }
+
+        public mutating func setPaymentsEntropy(_ valueParam: Data) {
+            proto.paymentsEntropy = valueParam
+        }
+
+        public mutating func setUnknownFields(_ unknownFields: SwiftProtobuf.UnknownStorage) {
+            proto.unknownFields = unknownFields
+        }
+
+        public func build() throws -> StorageServiceProtoAccountRecordPayments {
+            return try StorageServiceProtoAccountRecordPayments(proto)
+        }
+
+        public func buildSerializedData() throws -> Data {
+            return try StorageServiceProtoAccountRecordPayments(proto).serializedData()
+        }
+    }
+
+    fileprivate let proto: StorageServiceProtos_AccountRecord.Payments
+
+    public var enabled: Bool {
+        return proto.enabled
+    }
+    public var hasEnabled: Bool {
+        return true
+    }
+
+    public var paymentsEntropy: Data? {
+        guard hasPaymentsEntropy else {
+            return nil
+        }
+        return proto.paymentsEntropy
+    }
+    public var hasPaymentsEntropy: Bool {
+        return !proto.paymentsEntropy.isEmpty
+    }
+
+    public var hasUnknownFields: Bool {
+        return !proto.unknownFields.data.isEmpty
+    }
+    public var unknownFields: SwiftProtobuf.UnknownStorage? {
+        guard hasUnknownFields else { return nil }
+        return proto.unknownFields
+    }
+
+    private init(proto: StorageServiceProtos_AccountRecord.Payments) {
+        self.proto = proto
+    }
+
+    public func serializedData() throws -> Data {
+        return try self.proto.serializedData()
+    }
+
+    public init(serializedData: Data) throws {
+        let proto = try StorageServiceProtos_AccountRecord.Payments(serializedData: serializedData)
+        try self.init(proto)
+    }
+
+    fileprivate init(_ proto: StorageServiceProtos_AccountRecord.Payments) throws {
+        // MARK: - Begin Validation Logic for StorageServiceProtoAccountRecordPayments -
+
+        // MARK: - End Validation Logic for StorageServiceProtoAccountRecordPayments -
+
+        self.init(proto: proto)
+    }
+
+    public init(from decoder: Swift.Decoder) throws {
+        let singleValueContainer = try decoder.singleValueContainer()
+        let serializedData = try singleValueContainer.decode(Data.self)
+        try self.init(serializedData: serializedData)
+    }
+    public func encode(to encoder: Swift.Encoder) throws {
+        var singleValueContainer = encoder.singleValueContainer()
+        try singleValueContainer.encode(try serializedData())
+    }
+
+    public var debugDescription: String {
+        return "\(proto)"
+    }
+}
+
+#if DEBUG
+
+extension StorageServiceProtoAccountRecordPayments {
+    public func serializedDataIgnoringErrors() -> Data? {
+        return try! self.serializedData()
+    }
+}
+
+extension StorageServiceProtoAccountRecordPayments.StorageServiceProtoAccountRecordPaymentsBuilder {
+    public func buildIgnoringErrors() -> StorageServiceProtoAccountRecordPayments? {
+        return try! self.build()
+    }
+}
+
+#endif
+
 // MARK: - StorageServiceProtoAccountRecordPhoneNumberSharingMode
 
 public enum StorageServiceProtoAccountRecordPhoneNumberSharingMode: SwiftProtobuf.Enum {
@@ -2364,6 +2549,15 @@ public struct StorageServiceProtoAccountRecord: Codable, CustomDebugStringConver
             builder.setNotDiscoverableByPhoneNumber(notDiscoverableByPhoneNumber)
         }
         builder.setPinnedConversations(pinnedConversations)
+        if hasPreferContactAvatars {
+            builder.setPreferContactAvatars(preferContactAvatars)
+        }
+        if let _value = payments {
+            builder.setPayments(_value)
+        }
+        if hasUniversalExpireTimer {
+            builder.setUniversalExpireTimer(universalExpireTimer)
+        }
         if let _value = unknownFields {
             builder.setUnknownFields(_value)
         }
@@ -2460,6 +2654,24 @@ public struct StorageServiceProtoAccountRecord: Codable, CustomDebugStringConver
             proto.pinnedConversations = wrappedItems.map { $0.proto }
         }
 
+        public mutating func setPreferContactAvatars(_ valueParam: Bool) {
+            proto.preferContactAvatars = valueParam
+        }
+
+        @available(swift, obsoleted: 1.0)
+        public mutating func setPayments(_ valueParam: StorageServiceProtoAccountRecordPayments?) {
+            guard let valueParam = valueParam else { return }
+            proto.payments = valueParam.proto
+        }
+
+        public mutating func setPayments(_ valueParam: StorageServiceProtoAccountRecordPayments) {
+            proto.payments = valueParam.proto
+        }
+
+        public mutating func setUniversalExpireTimer(_ valueParam: UInt32) {
+            proto.universalExpireTimer = valueParam
+        }
+
         public mutating func setUnknownFields(_ unknownFields: SwiftProtobuf.UnknownStorage) {
             proto.unknownFields = unknownFields
         }
@@ -2476,6 +2688,8 @@ public struct StorageServiceProtoAccountRecord: Codable, CustomDebugStringConver
     fileprivate let proto: StorageServiceProtos_AccountRecord
 
     public let pinnedConversations: [StorageServiceProtoAccountRecordPinnedConversation]
+
+    public let payments: StorageServiceProtoAccountRecordPayments?
 
     public var profileKey: Data? {
         guard hasProfileKey else {
@@ -2591,6 +2805,20 @@ public struct StorageServiceProtoAccountRecord: Codable, CustomDebugStringConver
         return true
     }
 
+    public var preferContactAvatars: Bool {
+        return proto.preferContactAvatars
+    }
+    public var hasPreferContactAvatars: Bool {
+        return true
+    }
+
+    public var universalExpireTimer: UInt32 {
+        return proto.universalExpireTimer
+    }
+    public var hasUniversalExpireTimer: Bool {
+        return true
+    }
+
     public var hasUnknownFields: Bool {
         return !proto.unknownFields.data.isEmpty
     }
@@ -2600,9 +2828,11 @@ public struct StorageServiceProtoAccountRecord: Codable, CustomDebugStringConver
     }
 
     private init(proto: StorageServiceProtos_AccountRecord,
-                 pinnedConversations: [StorageServiceProtoAccountRecordPinnedConversation]) {
+                 pinnedConversations: [StorageServiceProtoAccountRecordPinnedConversation],
+                 payments: StorageServiceProtoAccountRecordPayments?) {
         self.proto = proto
         self.pinnedConversations = pinnedConversations
+        self.payments = payments
     }
 
     public func serializedData() throws -> Data {
@@ -2618,12 +2848,18 @@ public struct StorageServiceProtoAccountRecord: Codable, CustomDebugStringConver
         var pinnedConversations: [StorageServiceProtoAccountRecordPinnedConversation] = []
         pinnedConversations = try proto.pinnedConversations.map { try StorageServiceProtoAccountRecordPinnedConversation($0) }
 
+        var payments: StorageServiceProtoAccountRecordPayments?
+        if proto.hasPayments {
+            payments = try StorageServiceProtoAccountRecordPayments(proto.payments)
+        }
+
         // MARK: - Begin Validation Logic for StorageServiceProtoAccountRecord -
 
         // MARK: - End Validation Logic for StorageServiceProtoAccountRecord -
 
         self.init(proto: proto,
-                  pinnedConversations: pinnedConversations)
+                  pinnedConversations: pinnedConversations,
+                  payments: payments)
     }
 
     public init(from decoder: Swift.Decoder) throws {

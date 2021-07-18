@@ -1,5 +1,5 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 import PromiseKit
@@ -7,27 +7,8 @@ import PromiseKit
 @objc
 public class BulkProfileFetch: NSObject {
 
-    // MARK: - Dependencies
-
-    private var profileManager: ProfileManagerProtocol {
-        return SSKEnvironment.shared.profileManager
-    }
-
-    private var tsAccountManager: TSAccountManager {
-        return .shared()
-    }
-
-    private var reachabilityManager: SSKReachabilityManager {
-        return SSKEnvironment.shared.reachabilityManager
-    }
-
-    private var databaseStorage: SDSDatabaseStorage {
-        return .shared
-    }
-
-    // MARK: -
-
-    private let serialQueue = DispatchQueue(label: "BulkProfileFetch")
+    private static let serialQueue = DispatchQueue(label: "BulkProfileFetch")
+    private var serialQueue: DispatchQueue { Self.serialQueue }
 
     // This property should only be accessed on serialQueue.
     private var uuidQueue = OrderedSet<UUID>()
@@ -55,7 +36,8 @@ public class BulkProfileFetch: NSObject {
     }
 
     // This property should only be accessed on serialQueue.
-    private var lastOutcomeMap = [UUID: UpdateOutcome]()
+    private var lastOutcomeMap = LRUCache<UUID, UpdateOutcome>(maxSize: 16 * 1000,
+                                                               nseMaxSize: 4 * 1000)
 
     // This property should only be accessed on serialQueue.
     private var lastRateLimitErrorDate: Date?
@@ -66,9 +48,9 @@ public class BulkProfileFetch: NSObject {
 
         SwiftSingletons.register(self)
 
-        AppReadiness.runNowOrWhenAppDidBecomeReadyPolite {
+        AppReadiness.runNowOrWhenMainAppDidBecomeReadyAsync {
             // Try to update missing & stale profiles on launch.
-            DispatchQueue.global(qos: .utility).async {
+            self.serialQueue.async {
                 self.fetchMissingAndStaleProfiles()
             }
         }
@@ -95,7 +77,12 @@ public class BulkProfileFetch: NSObject {
     // This should be used for non-urgent profile updates.
     @objc
     public func fetchProfiles(thread: TSThread) {
-        fetchProfiles(addresses: thread.recipientAddresses)
+        var addresses = Set(thread.recipientAddresses)
+        if let groupThread = thread as? TSGroupThread,
+           let groupModel = groupThread.groupModel as? TSGroupModelV2 {
+            addresses.formUnion(groupModel.droppedMembers)
+        }
+        fetchProfiles(addresses: Array(addresses))
     }
 
     // This should be used for non-urgent profile updates.
@@ -121,6 +108,9 @@ public class BulkProfileFetch: NSObject {
     @objc
     public func fetchProfiles(uuids: [UUID]) {
         serialQueue.async {
+            guard self.tsAccountManager.isRegisteredAndReady else {
+                return
+            }
             guard let localUuid = self.tsAccountManager.localUuid else {
                 owsFailDebug("missing localUuid")
                 return
@@ -141,15 +131,11 @@ public class BulkProfileFetch: NSObject {
     private func process() {
         assertOnQueue(serialQueue)
 
-        guard !CurrentAppContext().isRunningTests else {  return }
-
-        guard CurrentAppContext().isMainApp else {
-            return
-        }
-        guard reachabilityManager.isReachable else {
-            return
-        }
-        guard tsAccountManager.isRegisteredAndReady else {
+        guard !CurrentAppContext().isRunningTests,
+              CurrentAppContext().isMainApp,
+              reachabilityManager.isReachable,
+              tsAccountManager.isRegisteredAndReady,
+              !DebugFlags.reduceLogChatter else {
             return
         }
 

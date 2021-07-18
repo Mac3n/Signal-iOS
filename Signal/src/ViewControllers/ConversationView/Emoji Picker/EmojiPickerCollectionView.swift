@@ -1,10 +1,10 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 import Foundation
 
-protocol EmojiPickerCollectionViewDelegate: class {
+protocol EmojiPickerCollectionViewDelegate: AnyObject {
     func emojiPicker(_ emojiPicker: EmojiPickerCollectionView, didSelectEmoji emoji: EmojiWithSkinTones)
     func emojiPicker(_ emojiPicker: EmojiPickerCollectionView, didScrollToSection section: Int)
 }
@@ -34,7 +34,7 @@ class EmojiPickerCollectionView: UICollectionView {
         layout.minimumInteritemSpacing = EmojiPickerCollectionView.minimumSpacing
         layout.sectionInset = UIEdgeInsets(top: 0, leading: EmojiPickerCollectionView.margins, bottom: 0, trailing: EmojiPickerCollectionView.margins)
 
-        (recentEmoji, allAvailableEmojiByCategory) = SDSDatabaseStorage.shared.uiRead { transaction in
+        (recentEmoji, allAvailableEmojiByCategory) = SDSDatabaseStorage.shared.read { transaction in
             let rawEmoji = EmojiPickerCollectionView.keyValueStore.getObject(
                 forKey: EmojiPickerCollectionView.recentEmojiKey,
                 transaction: transaction

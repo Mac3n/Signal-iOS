@@ -1,5 +1,5 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 import Foundation
@@ -33,11 +33,18 @@ public class TSGroupModelV2: TSGroupModel {
     @objc
     public var wasJustMigrated: Bool = false
     @objc
+    public var wasJustCreatedByLocalUser: Bool = false
+    @objc
+    public var didJustAddSelfViaGroupLink: Bool = false
+    @objc
     public var droppedMembers = [SignalServiceAddress]()
+    @objc
+    public var descriptionText: String?
 
     @objc
     public required init(groupId: Data,
                          name: String?,
+                         descriptionText: String?,
                          avatarData: Data?,
                          groupMembership: GroupMembership,
                          groupAccess: GroupAccess,
@@ -47,10 +54,13 @@ public class TSGroupModelV2: TSGroupModel {
                          inviteLinkPassword: Data?,
                          isPlaceholderModel: Bool,
                          wasJustMigrated: Bool,
+                         wasJustCreatedByLocalUser: Bool,
+                         didJustAddSelfViaGroupLink: Bool,
                          addedByAddress: SignalServiceAddress?,
                          droppedMembers: [SignalServiceAddress]) {
         assert(secretParamsData.count > 0)
 
+        self.descriptionText = descriptionText
         self.membership = groupMembership
         self.secretParamsData = secretParamsData
         self.access = groupAccess
@@ -59,6 +69,8 @@ public class TSGroupModelV2: TSGroupModel {
         self.inviteLinkPassword = inviteLinkPassword
         self.isPlaceholderModel = isPlaceholderModel
         self.wasJustMigrated = wasJustMigrated
+        self.wasJustCreatedByLocalUser = wasJustCreatedByLocalUser
+        self.didJustAddSelfViaGroupLink = didJustAddSelfViaGroupLink
         self.droppedMembers = droppedMembers
 
         super.init(groupId: groupId,
@@ -107,8 +119,11 @@ public class TSGroupModelV2: TSGroupModel {
             case .compareAll:
                 return false
             case .userFacingOnly:
-                return true
+                return descriptionText == nil
             }
+        }
+        guard other.descriptionText == descriptionText else {
+            return false
         }
         guard other.membership == membership else {
             return false
@@ -128,10 +143,15 @@ public class TSGroupModelV2: TSGroupModel {
         guard other.inviteLinkPassword == inviteLinkPassword else {
             return false
         }
-        guard other.droppedMembers == droppedMembers else {
+        guard other.droppedMembers.stableSort() == droppedMembers.stableSort() else {
             return false
         }
-        // Ignore isPlaceholderModel & wasJustMigrated.
+        // Ignore transient properties:
+        //
+        // * isPlaceholderModel
+        // * wasJustMigrated
+        // * wasJustCreatedByLocalUser
+        // * didJustAddSelfViaGroupLink
         return true
     }
 
@@ -151,6 +171,8 @@ public class TSGroupModelV2: TSGroupModel {
         result += "addedByAddress: \(addedByAddress?.debugDescription ?? "None"),\n"
         result += "isPlaceholderModel: \(isPlaceholderModel),\n"
         result += "wasJustMigrated: \(wasJustMigrated),\n"
+        result += "wasJustCreatedByLocalUser: \(wasJustCreatedByLocalUser),\n"
+        result += "didJustAddSelfViaGroupLink: \(didJustAddSelfViaGroupLink),\n"
         result += "droppedMembers: \(droppedMembers),\n"
         result += "]"
         return result
@@ -203,6 +225,20 @@ public extension TSGroupModel {
             return false
         }
         return groupModelV2.wasJustMigrated
+    }
+
+    var wasJustCreatedByLocalUserV2: Bool {
+        guard let groupModelV2 = self as? TSGroupModelV2 else {
+            return false
+        }
+        return groupModelV2.wasJustCreatedByLocalUser
+    }
+
+    var didJustAddSelfViaGroupLinkV2: Bool {
+        guard let groupModelV2 = self as? TSGroupModelV2 else {
+            return false
+        }
+        return groupModelV2.didJustAddSelfViaGroupLink
     }
 
     var getDroppedMembers: [SignalServiceAddress] {

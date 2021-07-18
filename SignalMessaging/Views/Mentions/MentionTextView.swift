@@ -1,5 +1,5 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 import Foundation
@@ -101,7 +101,7 @@ open class MentionTextView: OWSTextView {
             return owsFailDebug("Can't replace characters without delegate")
         }
 
-        let attributedBody = SDSDatabaseStorage.shared.uiRead { transaction in
+        let attributedBody = SDSDatabaseStorage.shared.read { transaction in
             messageBody.attributedBody(
                 style: mentionDelegate.textViewMentionStyle(self),
                 attributes: self.defaultAttributes,
@@ -174,14 +174,14 @@ open class MentionTextView: OWSTextView {
         set {
             guard let newValue = newValue else {
                 replaceCharacters(
-                    in: NSRange(location: 0, length: textStorage.length),
+                    in: textStorage.entireRange,
                     with: ""
                 )
                 typingAttributes = defaultAttributes
                 return
             }
             replaceCharacters(
-                in: NSRange(location: 0, length: textStorage.length),
+                in: textStorage.entireRange,
                 with: newValue
             )
         }
@@ -345,7 +345,7 @@ open class MentionTextView: OWSTextView {
                     .mention,
                     at: subrange.location,
                     longestEffectiveRange: &uniqueMentionRange,
-                    in: NSRange(location: 0, length: textStorage.length)
+                    in: textStorage.entireRange
                 ) != nil else {
                     return owsFailDebug("Unexpectedly missing mention for subrange")
                 }
@@ -372,7 +372,7 @@ open class MentionTextView: OWSTextView {
                     .mention,
                     at: range.location,
                     longestEffectiveRange: &uniqueMentionRange,
-                    in: NSRange(location: 0, length: textStorage.length)
+                    in: textStorage.entireRange
                 ) as? Mention,
                 leftMention == rightMention {
                 deletedMentions[uniqueMentionRange] = leftMention

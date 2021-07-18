@@ -1,5 +1,5 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 import Foundation
@@ -68,7 +68,8 @@ class IndividualCallViewController: OWSViewController, CallObserver, CallAudioSe
     // MARK: - Contact Views
 
     private lazy var contactNameLabel = MarqueeLabel()
-    private lazy var contactAvatarView = AvatarImageView()
+    private lazy var contactAvatarView = ConversationAvatarView(diameterPoints: 200,
+                                                                localUserDisplayMode: .asUser)
     private lazy var contactAvatarContainerView = UIView.container()
     private lazy var callStatusLabel = UILabel()
     private lazy var backButton = UIButton()
@@ -498,8 +499,12 @@ class IndividualCallViewController: OWSViewController, CallObserver, CallAudioSe
 
     @objc
     func updateAvatarImage() {
-        contactAvatarView.image = OWSAvatarBuilder.buildImage(thread: thread, diameter: 400)
-        backgroundAvatarView.image = contactsManager.imageForAddress(withSneakyTransaction: thread.contactAddress)
+        databaseStorage.read { transaction in
+            contactAvatarView.configure(thread: thread, transaction: transaction)
+            backgroundAvatarView.image = contactsManagerImpl.avatarImage(forAddress: thread.contactAddress,
+                                                                         shouldValidate: true,
+                                                                         transaction: transaction)
+        }
     }
 
     func createIncomingCallControls() {
@@ -598,7 +603,6 @@ class IndividualCallViewController: OWSViewController, CallObserver, CallAudioSe
         contactAvatarContainerView.autoPinWidthToSuperview(withMargin: avatarMargin)
 
         contactAvatarView.autoCenterInSuperview()
-        contactAvatarView.autoSetDimensions(to: CGSize(square: 200))
 
         ongoingAudioCallControls.autoPinEdge(toSuperviewEdge: .top, withInset: gradientMargin)
         incomingVideoCallControls.autoPinEdge(toSuperviewEdge: .top)
@@ -638,7 +642,7 @@ class IndividualCallViewController: OWSViewController, CallObserver, CallAudioSe
     }
 
     private var isRenderingLocalVanityVideo: Bool {
-        return [.idle, .dialing, .remoteRinging].contains(call.individualCall.state) && !localVideoView.isHidden
+        return [.idle, .dialing, .remoteRinging, .localRinging].contains(call.individualCall.state) && !localVideoView.isHidden
     }
 
     private var previousOrigin: CGPoint!
@@ -819,6 +823,10 @@ class IndividualCallViewController: OWSViewController, CallObserver, CallAudioSe
 
         localVideoView.isHidden = !call.individualCall.hasLocalVideo
 
+        updateRemoteVideoTrack(
+            remoteVideoTrack: call.individualCall.isRemoteVideoEnabled ? call.individualCall.remoteVideoTrack : nil
+        )
+
         // Show Incoming vs. Ongoing call controls
         if call.individualCall.state == .localRinging {
             let isVideoOffer = call.individualCall.offerMediaType == .video
@@ -835,6 +843,8 @@ class IndividualCallViewController: OWSViewController, CallObserver, CallAudioSe
 
         // Rework control state if remote video is available.
         let hasRemoteVideo = !remoteVideoView.isHidden
+        remoteVideoView.isFullScreen = true
+        remoteVideoView.isScreenShare = call.individualCall.isRemoteSharingScreen
         contactAvatarView.isHidden = hasRemoteVideo || isRenderingLocalVanityVideo
 
         // Layout controls immediately to avoid spurious animation.
@@ -965,7 +975,7 @@ class IndividualCallViewController: OWSViewController, CallObserver, CallAudioSe
         needPermissionStack.addArrangedSubview(contactAvatarContainerView)
         contactAvatarContainerView.autoSetDimension(.height, toSize: 200)
 
-        let shortName = SDSDatabaseStorage.shared.uiRead {
+        let shortName = SDSDatabaseStorage.shared.read {
             return self.contactsManager.shortDisplayName(
                 for: self.thread.contactAddress,
                 transaction: $0
@@ -1047,7 +1057,7 @@ class IndividualCallViewController: OWSViewController, CallObserver, CallAudioSe
     @objc func didPressHangup(sender: UIButton) {
         Logger.info("")
 
-        callUIAdapter.localHangupCall(call)
+        individualCallUIAdapter.localHangupCall(call)
 
         dismissIfPossible(shouldDelay: false)
     }
@@ -1056,7 +1066,7 @@ class IndividualCallViewController: OWSViewController, CallObserver, CallAudioSe
         Logger.info("")
         let isMuted = !sender.isSelected
 
-        callUIAdapter.setIsMuted(call: call, isMuted: isMuted)
+        individualCallUIAdapter.setIsMuted(call: call, isMuted: isMuted)
     }
 
     @objc func didPressAudioSource(sender button: UIButton) {
@@ -1085,24 +1095,24 @@ class IndividualCallViewController: OWSViewController, CallObserver, CallAudioSe
     @objc func didPressAnswerCall(sender: UIButton) {
         Logger.info("")
 
-        callUIAdapter.answerCall(call)
+        individualCallUIAdapter.answerCall(call)
 
-        // Answer with video.
-        if sender == videoAnswerIncomingButton {
-            callUIAdapter.setHasLocalVideo(call: call, hasLocalVideo: true)
+        // Answer without video.
+        if sender == videoAnswerIncomingAudioOnlyButton {
+            individualCallUIAdapter.setHasLocalVideo(call: call, hasLocalVideo: false)
         }
 
         // We should always be unmuted when we answer an incoming call.
         // Explicitly setting it so will cause us to prompt for
         // microphone permissions if necessary.
-        callUIAdapter.setIsMuted(call: call, isMuted: false)
+        individualCallUIAdapter.setIsMuted(call: call, isMuted: false)
     }
 
     @objc func didPressVideo(sender: UIButton) {
         Logger.info("")
         let hasLocalVideo = !sender.isSelected
 
-        callUIAdapter.setHasLocalVideo(call: call, hasLocalVideo: hasLocalVideo)
+        individualCallUIAdapter.setHasLocalVideo(call: call, hasLocalVideo: hasLocalVideo)
     }
 
     @objc func didPressFlipCamera(sender: UIButton) {
@@ -1111,7 +1121,7 @@ class IndividualCallViewController: OWSViewController, CallObserver, CallAudioSe
         let isUsingFrontCamera = !sender.isSelected
         Logger.info("with isUsingFrontCamera: \(isUsingFrontCamera)")
 
-        callUIAdapter.setCameraSource(call: call, isUsingFrontCamera: isUsingFrontCamera)
+        individualCallUIAdapter.setCameraSource(call: call, isUsingFrontCamera: isUsingFrontCamera)
     }
 
     /**
@@ -1120,26 +1130,9 @@ class IndividualCallViewController: OWSViewController, CallObserver, CallAudioSe
     @objc func didPressDeclineCall(sender: UIButton) {
         Logger.info("")
 
-        callUIAdapter.localHangupCall(call)
+        individualCallUIAdapter.localHangupCall(call)
 
         dismissIfPossible(shouldDelay: false)
-    }
-
-    @objc func didPressShowCallSettings(sender: UIButton) {
-        Logger.info("")
-
-        dismissIfPossible(shouldDelay: false, completion: {
-            // Find the frontmost presented UIViewController from which to present the
-            // settings views.
-            let fromViewController = UIApplication.shared.frontmostViewControllerIgnoringAlerts
-            assert(fromViewController != nil)
-
-            // Construct the "settings" view & push the "privacy settings" view.
-            let navigationController = AppSettingsViewController.inModalNavigationController()
-            navigationController.pushViewController(PrivacySettingsTableViewController(), animated: false)
-
-            fromViewController?.present(navigationController, animated: true, completion: nil)
-        })
     }
 
     @objc func didTapLeaveCall(sender: UIButton) {
@@ -1173,6 +1166,11 @@ class IndividualCallViewController: OWSViewController, CallObserver, CallAudioSe
     func individualCallRemoteVideoMuteDidChange(_ call: SignalCall, isVideoMuted: Bool) {
         AssertIsOnMainThread()
         updateRemoteVideoTrack(remoteVideoTrack: isVideoMuted ? nil : call.individualCall.remoteVideoTrack)
+    }
+
+    func individualCallRemoteSharingScreenDidChange(_ call: SignalCall, isRemoteSharingScreen: Bool) {
+        AssertIsOnMainThread()
+        self.updateCallUI()
     }
 
     // MARK: - CallAudioServiceDelegate

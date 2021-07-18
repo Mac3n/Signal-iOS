@@ -1,5 +1,5 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 import Contacts
@@ -54,12 +54,25 @@ public class FakeContactsManager: NSObject, ContactsManagerProtocol {
         return true
     }
 
+    public func isSystemContact(withSignalAccount phoneNumber: String, transaction: SDSAnyReadTransaction) -> Bool {
+        return true
+    }
+
     public func hasNameInSystemContacts(for address: SignalServiceAddress) -> Bool {
         return true
     }
 
-    public func conversationColorName(for address: SignalServiceAddress, transaction: SDSAnyReadTransaction) -> ConversationColorName {
-        ConversationColorName.indigo
+    public func hasNameInSystemContacts(for address: SignalServiceAddress, transaction: SDSAnyReadTransaction) -> Bool {
+        return true
+    }
+
+    public func isSystemContactWithSignalAccount(_ address: SignalServiceAddress) -> Bool {
+        return true
+    }
+
+    public func isSystemContactWithSignalAccount(_ address: SignalServiceAddress,
+                                                 transaction: SDSAnyReadTransaction) -> Bool {
+        return true
     }
 
     public func sortSignalServiceAddresses(_ addresses: [SignalServiceAddress],

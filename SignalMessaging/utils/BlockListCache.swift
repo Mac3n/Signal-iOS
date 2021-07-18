@@ -1,11 +1,11 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 import Foundation
 
 @objc(OWSBlockListCacheDelegate)
-public protocol BlockListCacheDelegate: class {
+public protocol BlockListCacheDelegate: AnyObject {
     func blockListCacheDidUpdate(_ blocklistCache: BlockListCache)
 }
 
@@ -44,10 +44,6 @@ public class BlockListCache: NSObject {
     private let serialQueue: DispatchQueue = DispatchQueue(label: "BlockListCache")
     weak var delegate: BlockListCacheDelegate?
 
-    private var blockingManager: OWSBlockingManager {
-        return OWSBlockingManager.shared()
-    }
-
     /// Generally something which wants to use this cache wants to do 3 things
     ///   1. get the cache on the latest state
     ///   2. update the cache whenever the blockingManager's state changes
@@ -58,7 +54,7 @@ public class BlockListCache: NSObject {
         self.delegate = delegate
         NotificationCenter.default.addObserver(self,
                                                selector: #selector(blockListDidChange),
-                                               name: ._BlockListDidChange,
+                                               name: .blockListDidChange,
                                                object: nil)
         updateWithoutNotifyingDelegate()
     }

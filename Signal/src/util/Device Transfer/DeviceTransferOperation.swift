@@ -1,5 +1,5 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 import Foundation
@@ -9,7 +9,6 @@ import MultipeerConnectivity
 class DeviceTransferOperation: OWSOperation {
 
     let file: DeviceTransferProtoFile
-    var deviceTransferService: DeviceTransferService { .shared }
 
     let promise: Promise<Void>
     private let resolver: Resolver<Void>
@@ -89,7 +88,7 @@ class DeviceTransferOperation: OWSOperation {
             }
         }
 
-        guard let sha256Digest = Cryptography.computeSHA256DigestOfFile(at: url) else {
+        guard let sha256Digest = try? Cryptography.computeSHA256DigestOfFile(at: url) else {
             return reportError(OWSAssertionError("Failed to calculate sha256 for file"))
         }
 

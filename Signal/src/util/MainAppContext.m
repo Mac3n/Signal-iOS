@@ -1,5 +1,5 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 #import "MainAppContext.h"
@@ -17,9 +17,6 @@ NSString *const ReportedApplicationStateDidChangeNotification = @"ReportedApplic
 @interface MainAppContext ()
 
 @property (nonatomic, nullable) NSMutableArray<AppActiveBlock> *appActiveBlocks;
-
-// POST GRDB TODO: Remove this
-@property (nonatomic) NSUUID *disposableDatabaseUUID;
 
 @property (nonatomic, readonly) UIApplicationState mainApplicationStateOnLaunch;
 
@@ -45,7 +42,6 @@ NSString *const ReportedApplicationStateDidChangeNotification = @"ReportedApplic
     self.reportedApplicationState = UIApplicationStateInactive;
 
     _appLaunchTime = [NSDate new];
-    _disposableDatabaseUUID = [NSUUID UUID];
     _mainApplicationStateOnLaunch = [UIApplication sharedApplication].applicationState;
 
     [[NSNotificationCenter defaultCenter] addObserver:self
@@ -200,6 +196,11 @@ NSString *const ReportedApplicationStateDidChangeNotification = @"ReportedApplic
 - (BOOL)isMainAppAndActive
 {
     return [UIApplication sharedApplication].applicationState == UIApplicationStateActive;
+}
+
+- (BOOL)isNSE
+{
+    return NO;
 }
 
 - (BOOL)isRTL
@@ -392,11 +393,7 @@ NSString *const ReportedApplicationStateDidChangeNotification = @"ReportedApplic
 
 - (NSString *)appDatabaseBaseDirectoryPath
 {
-    if (SDSDatabaseStorage.shouldUseDisposableGrdb) {
-        return [self.appSharedDataDirectoryPath stringByAppendingPathComponent:self.disposableDatabaseUUID.UUIDString];
-    } else {
-        return self.appSharedDataDirectoryPath;
-    }
+    return self.appSharedDataDirectoryPath;
 }
 
 - (NSUserDefaults *)appUserDefaults
@@ -421,7 +418,16 @@ NSString *const ReportedApplicationStateDidChangeNotification = @"ReportedApplic
 
 - (BOOL)didLastLaunchNotTerminate
 {
-    return SignalApp.sharedApp.didLastLaunchNotTerminate;
+    return SignalApp.shared.didLastLaunchNotTerminate;
+}
+
+- (BOOL)hasActiveCall
+{
+    if (!AppReadiness.isAppReady) {
+        OWSFailDebug(@"App is not ready.");
+        return NO;
+    }
+    return AppEnvironment.shared.callService.hasCallInProgress;
 }
 
 - (NSString *)debugLogsDirPath

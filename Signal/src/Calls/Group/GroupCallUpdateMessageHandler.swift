@@ -1,12 +1,12 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 import Foundation
 import SignalServiceKit
 import SignalRingRTC
 
-class GroupCallUpdateMessageHandler: CallServiceObserver, CallObserver {
+class GroupCallUpdateMessageHandler: CallServiceObserver, CallObserver, Dependencies {
 
     var didSendJoinMessage: Bool = false
 
@@ -31,19 +31,19 @@ class GroupCallUpdateMessageHandler: CallServiceObserver, CallObserver {
     }
 
     func sendUpdateMessageForThread(_ thread: TSGroupThread, eraId: String?) {
-        Logger.info("Sending call update message for thread \(thread)")
+        Logger.info("Sending call update message for thread \(thread.uniqueId)")
 
         let updateMessage = OWSOutgoingGroupCallMessage(thread: thread, eraId: eraId)
         let messagePreparer = updateMessage.asPreparer
         SDSDatabaseStorage.shared.asyncWrite { writeTx in
-            SSKEnvironment.shared.messageSenderJobQueue.add(message: messagePreparer, transaction: writeTx)
+            Self.messageSenderJobQueue.add(message: messagePreparer, transaction: writeTx)
         }
     }
 
     func handleUpdateMessage(_ message: SSKProtoDataMessageGroupCallUpdate, for thread: TSGroupThread, serverReceivedTimestamp: UInt64) {
-        Logger.info("Received group call update message for thread: \(thread.uniqueId) eraId: \(message.eraID)")
+        Logger.info("Received group call update message for thread: \(thread.uniqueId) eraId: \(String(describing: message.eraID))")
         DispatchQueue.main.async {
-            AppEnvironment.shared.callService.peekCallAndUpdateThread(
+            Self.callService.peekCallAndUpdateThread(
                 thread,
                 expectedEraId: message.eraID,
                 triggerEventTimestamp: serverReceivedTimestamp)
@@ -64,7 +64,7 @@ class GroupCallUpdateMessageHandler: CallServiceObserver, CallObserver {
     // MARK: - CallObserver
 
     func groupCallLocalDeviceStateChanged(_ call: SignalCall) {
-        owsAssertDebug(call == AppEnvironment.shared.callService.currentCall)
+        owsAssertDebug(call == Self.callService.currentCall)
         guard call.isGroupCall, let groupCall = call.groupCall else { return owsFailDebug("Expected a group call") }
 
         let isJoined = (groupCall.localDeviceState.joinState == .joined)

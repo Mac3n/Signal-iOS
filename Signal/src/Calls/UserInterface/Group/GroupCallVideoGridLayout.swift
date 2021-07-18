@@ -1,11 +1,11 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 import Foundation
 import SignalRingRTC
 
-protocol GroupCallVideoGridLayoutDelegate: class {
+protocol GroupCallVideoGridLayoutDelegate: AnyObject {
     var maxColumns: Int { get }
     var maxRows: Int { get }
     var maxItems: Int { get }
@@ -23,7 +23,7 @@ class GroupCallVideoGridLayout: UICollectionViewLayout {
 
     // MARK: Initializers and Factory Methods
 
-    @available(*, unavailable, message:"use other constructor instead.")
+    @available(*, unavailable, message: "use other constructor instead.")
     required init?(coder aDecoder: NSCoder) {
         notImplemented()
     }

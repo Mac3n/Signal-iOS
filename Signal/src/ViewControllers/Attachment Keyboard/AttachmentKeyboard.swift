@@ -1,5 +1,5 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 import Foundation
@@ -10,11 +10,13 @@ import PromiseKit
 protocol AttachmentKeyboardDelegate {
     func didSelectRecentPhoto(asset: PHAsset, attachment: SignalAttachment)
     func didTapGalleryButton()
-    func didTapCamera(withPhotoCapture: PhotoCapture?)
+    func didTapCamera()
     func didTapGif()
     func didTapFile()
     func didTapContact()
     func didTapLocation()
+    func didTapPayment()
+    var isGroup: Bool { get }
 }
 
 class AttachmentKeyboard: CustomKeyboard {
@@ -158,12 +160,6 @@ class AttachmentKeyboard: CustomKeyboard {
         }
     }
 
-    override func wasDismissed() {
-        super.wasDismissed()
-
-        attachmentFormatPickerView.stopCameraPreview()
-    }
-
     @objc func keyboardFrameDidChange() {
         updateItemSizes()
     }
@@ -201,21 +197,6 @@ class AttachmentKeyboard: CustomKeyboard {
             break
         }
 
-        switch AVCaptureDevice.authorizationStatus(for: .video) {
-        case .authorized:
-            attachmentFormatPickerView.startCameraPreview()
-        case .notDetermined:
-            AVCaptureDevice.requestAccess(for: .video) { granted in
-                if granted {
-                    DispatchQueue.main.async { self.attachmentFormatPickerView.startCameraPreview() }
-                }
-            }
-        case .denied, .restricted:
-            break
-        @unknown default:
-            break
-        }
-
         completion()
     }
 }
@@ -240,8 +221,8 @@ extension AttachmentKeyboard: RecentPhotosDelegate {
 }
 
 extension AttachmentKeyboard: AttachmentFormatPickerDelegate {
-    func didTapCamera(withPhotoCapture photoCapture: PhotoCapture?) {
-        delegate?.didTapCamera(withPhotoCapture: photoCapture)
+    func didTapCamera() {
+        delegate?.didTapCamera()
     }
 
     func didTapGif() {
@@ -258,6 +239,18 @@ extension AttachmentKeyboard: AttachmentFormatPickerDelegate {
 
     func didTapLocation() {
         delegate?.didTapLocation()
+    }
+
+    func didTapPayment() {
+        delegate?.didTapPayment()
+    }
+
+    var isGroup: Bool {
+        guard let delegate = delegate else {
+            owsFailDebug("Missing delegate.")
+            return false
+        }
+        return delegate.isGroup
     }
 }
 

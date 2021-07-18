@@ -1,5 +1,5 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 import Foundation
@@ -83,14 +83,37 @@ public extension SDSRecord {
             statement.unsafeSetArguments(arguments)
             try statement.execute()
         } catch {
+            // If the attempt to write to GRDB flagged that the database was
+            // corrupt, in addition to crashing we flag this so that we can
+            // attempt to perform recovery.
+            if let error = error as? DatabaseError, error.resultCode == .SQLITE_CORRUPT {
+                SSKPreferences.setHasGrdbDatabaseCorruption(true)
+            }
+
             owsFail("Write failed: \(error.grdbErrorForLogging)")
         }
     }
 }
 
+// MARK: -
+
 fileprivate extension SDSRecord {
 
-    func grdbIdByUniqueId(transaction: GRDBWriteTransaction) -> Int64? {
+    func grdbIdByUniqueId(transaction: GRDBReadTransaction) -> Int64? {
+        BaseModel.grdbIdByUniqueId(tableMetadata: tableMetadata,
+                                   uniqueIdColumnName: uniqueIdColumnName,
+                                   uniqueIdColumnValue: uniqueIdColumnValue,
+                                   transaction: transaction)
+    }
+}
+
+// MARK: -
+
+extension BaseModel {
+    static func grdbIdByUniqueId(tableMetadata: SDSTableMetadata,
+                                 uniqueIdColumnName: String,
+                                 uniqueIdColumnValue: String,
+                                 transaction: GRDBReadTransaction) -> Int64? {
         do {
             let tableName = tableMetadata.tableName
             let sql = "SELECT id FROM \(tableName.quotedDatabaseIdentifier) WHERE \(uniqueIdColumnName.quotedDatabaseIdentifier)=?"

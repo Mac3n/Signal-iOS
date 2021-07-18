@@ -1,15 +1,13 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 #import <SignalServiceKit/ProfileManagerProtocol.h>
 
 NS_ASSUME_NONNULL_BEGIN
 
-extern NSNotificationName const kNSNotificationNameProfileKeyDidChange;
-
-extern const NSUInteger kOWSProfileManager_MaxAvatarDiameter;
-extern const NSString *kNSNotificationKey_WasLocallyInitiated;
+extern const NSUInteger kOWSProfileManager_MaxAvatarDiameterPixels;
+extern const NSString *kNSNotificationKey_UserProfileWriter;
 
 @class MessageSender;
 @class OWSAES256Key;
@@ -23,6 +21,21 @@ extern const NSString *kNSNotificationKey_WasLocallyInitiated;
 @class TSThread;
 
 typedef void (^ProfileManagerFailureBlock)(NSError *error);
+
+@interface OWSProfileSnapshot : NSObject
+
+@property (nonatomic, readonly, nullable) NSString *givenName;
+@property (nonatomic, readonly, nullable) NSString *familyName;
+@property (nonatomic, readonly, nullable) NSString *fullName;
+@property (nonatomic, readonly, nullable) NSString *bio;
+@property (nonatomic, readonly, nullable) NSString *bioEmoji;
+@property (nonatomic, readonly, nullable) NSString *username;
+
+@property (nonatomic, readonly, nullable) NSData *avatarData;
+
+@end
+
+#pragma mark -
 
 // This class can be safely accessed and used from any thread.
 @interface OWSProfileManager : NSObject <ProfileManagerProtocol>
@@ -41,8 +54,6 @@ typedef void (^ProfileManagerFailureBlock)(NSError *error);
 
 - (instancetype)initWithDatabaseStorage:(SDSDatabaseStorage *)databaseStorage NS_DESIGNATED_INITIALIZER;
 
-+ (instancetype)shared;
-
 #pragma mark - Local Profile
 
 // These two methods should only be called from the main thread.
@@ -58,7 +69,12 @@ typedef void (^ProfileManagerFailureBlock)(NSError *error);
 - (nullable UIImage *)localProfileAvatarImage;
 - (nullable NSData *)localProfileAvatarData;
 
-- (void)updateLocalUsername:(nullable NSString *)username transaction:(SDSAnyWriteTransaction *)transaction;
+- (OWSProfileSnapshot *)localProfileSnapshotWithShouldIncludeAvatar:(BOOL)shouldIncludeAvatar
+    NS_SWIFT_NAME(localProfileSnapshot(shouldIncludeAvatar:));
+
+- (void)updateLocalUsername:(nullable NSString *)username
+          userProfileWriter:(UserProfileWriter)userProfileWriter
+                transaction:(SDSAnyWriteTransaction *)transaction;
 
 - (BOOL)isProfileNameTooLong:(nullable NSString *)profileName;
 
@@ -91,7 +107,7 @@ typedef void (^ProfileManagerFailureBlock)(NSError *error);
 - (void)logProfileWhitelist;
 - (void)debug_regenerateLocalProfileWithSneakyTransaction;
 - (void)setLocalProfileKey:(OWSAES256Key *)key
-       wasLocallyInitiated:(BOOL)wasLocallyInitiated
+         userProfileWriter:(UserProfileWriter)userProfileWriter
                transaction:(SDSAnyWriteTransaction *)transaction;
 
 - (void)setContactAddresses:(NSArray<SignalServiceAddress *> *)contactAddresses;
@@ -122,6 +138,9 @@ typedef void (^ProfileManagerFailureBlock)(NSError *error);
 - (nullable NSString *)usernameForAddress:(SignalServiceAddress *)address
                               transaction:(SDSAnyReadTransaction *)transaction;
 
+- (nullable NSString *)profileBioForDisplayForAddress:(SignalServiceAddress *)address
+                                          transaction:(SDSAnyReadTransaction *)transaction;
+
 #pragma mark - Clean Up
 
 + (NSSet<NSString *> *)allProfileAvatarFilePathsWithTransaction:(SDSAnyReadTransaction *)transaction;
@@ -136,6 +155,8 @@ typedef void (^ProfileManagerFailureBlock)(NSError *error);
 
 // This method is only exposed for usage by the Swift extensions.
 - (NSString *)generateAvatarFilename;
+
+- (NSString *)groupKeyForGroupId:(NSData *)groupId;
 
 #ifdef DEBUG
 + (void)discardAllProfileKeysWithTransaction:(SDSAnyWriteTransaction *)transaction;

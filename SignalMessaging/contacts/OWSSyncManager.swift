@@ -1,14 +1,11 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 import Foundation
 import PromiseKit
 
 extension OWSSyncManager: SyncManagerProtocolSwift {
-
-    var profileManager: OWSProfileManager { .shared() }
-    var blockingManager: OWSBlockingManager { .shared() }
 
     // MARK: - Sync Requests
 
@@ -79,7 +76,7 @@ extension OWSSyncManager: SyncManagerProtocolSwift {
 
         KeyBackupService.storeSyncedKey(type: .storageService, data: syncMessage.storageService, transaction: transaction)
 
-        transaction.addAsyncCompletion {
+        transaction.addAsyncCompletionOffMain {
             NotificationCenter.default.postNotificationNameAsync(.OWSSyncManagerKeysSyncDidComplete, object: nil)
         }
     }
@@ -159,23 +156,9 @@ extension OWSSyncManager: SyncManagerProtocolSwift {
     }
 }
 
-public extension SyncManagerProtocolSwift {
+// MARK: -
 
-    // MARK: -
-
-    var tsAccountManager: TSAccountManager {
-        return .shared()
-    }
-
-    var databaseStorage: SDSDatabaseStorage {
-        return .shared
-    }
-
-    var messageSenderJobQueue: MessageSenderJobQueue {
-        return SSKEnvironment.shared.messageSenderJobQueue
-    }
-
-    // MARK: -
+public extension OWSSyncManager {
 
     func sendInitialSyncRequestsAwaitingCreatedThreadOrdering(timeoutSeconds: TimeInterval) -> Promise<[String]> {
         Logger.info("")

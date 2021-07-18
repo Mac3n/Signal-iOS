@@ -1,17 +1,30 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 import Foundation
 
 @objcMembers
 public class GroupUpdateCopyItem: NSObject {
-    let type: GroupUpdateType
-    let text: String
+    public let type: GroupUpdateType
+    public let text: String
 
     init(type: GroupUpdateType, text: String) {
         self.type = type
         self.text = text
+    }
+
+    var shouldAppearInInbox: Bool {
+        switch type {
+        case .groupMigrated,
+             .groupMigrated_usersDropped,
+             .groupMigrated_usersInvited:
+            return false
+        case .userMembershipState_left:
+            return false
+        default:
+            return true
+        }
     }
 }
 
@@ -30,6 +43,8 @@ public enum GroupUpdateType: Int {
     case userMembershipState_invalidInvitesRemoved
     case userRole
     case groupName
+    case groupDescriptionUpdated
+    case groupDescriptionRemoved
     case groupAvatar
     case accessMembers
     case accessAttributes
@@ -41,6 +56,7 @@ public enum GroupUpdateType: Int {
     case groupMigrated
     case groupMigrated_usersDropped
     case groupMigrated_usersInvited
+    case groupGroupLinkPromotion
     case debug
 
     var typeForDeduplication: GroupUpdateType {
@@ -61,23 +77,9 @@ public enum GroupUpdateType: Int {
     }
 }
 
-struct GroupUpdateCopy {
+// MARK: -
 
-    // MARK: - Dependencies
-
-    private static var contactsManager: ContactsManagerProtocol {
-        return SSKEnvironment.shared.contactsManager
-    }
-
-    private var contactsManager: ContactsManagerProtocol {
-        return SSKEnvironment.shared.contactsManager
-    }
-
-    private static var tsAccountManager: TSAccountManager {
-        return TSAccountManager.shared()
-    }
-
-    // MARK: -
+struct GroupUpdateCopy: Dependencies {
 
     struct UpdateItem: Hashable {
         let type: GroupUpdateType
@@ -187,6 +189,10 @@ struct GroupUpdateCopy {
             // Include a description of current DM state, if necessary.
             addDisappearingMessageUpdates(oldToken: oldDisappearingMessageToken,
                                           newToken: newDisappearingMessageToken)
+
+            if newGroupModel.wasJustCreatedByLocalUserV2 {
+                addWasJustCreatedByLocalUserUpdates()
+            }
         }
 
         if itemList.count < 1 {
@@ -348,6 +354,71 @@ extension GroupUpdateCopy {
                 }
             }
         }
+
+        guard let oldGroupModel = oldGroupModel as? TSGroupModelV2,
+              let newGroupModel = newGroupModel as? TSGroupModelV2 else { return }
+
+        let groupDescription = { (groupModel: TSGroupModelV2) -> String? in
+            if let name = groupModel.descriptionText?.stripped, name.count > 0 {
+                return name
+            }
+            return nil
+        }
+        let oldGroupDescription = groupDescription(oldGroupModel)
+        let newGroupDescription = groupDescription(newGroupModel)
+        if oldGroupDescription != newGroupDescription {
+            if newGroupDescription != nil {
+                switch updater {
+                case .localUser:
+                    addItem(
+                        .groupDescriptionUpdated,
+                        copy: NSLocalizedString(
+                            "GROUP_UPDATED_DESCRIPTION_UPDATED_BY_LOCAL_USER",
+                            comment: "Message indicating that the group's description was changed by the local user.."
+                        )
+                    )
+                case .otherUser(let updaterName, _):
+                    let format = NSLocalizedString(
+                        "GROUP_UPDATED_DESCRIPTION_UPDATED_BY_REMOTE_USER_FORMAT",
+                        comment: "Message indicating that the group's description was changed by a remote user. Embeds {{ user who changed the name }}."
+                    )
+                    addItem(.groupDescriptionUpdated, format: format, updaterName)
+                case .unknown:
+                    addItem(
+                        .groupDescriptionUpdated,
+                        copy: NSLocalizedString(
+                            "GROUP_UPDATED_DESCRIPTION_UPDATED",
+                            comment: "Message indicating that the group's description was changed."
+                        )
+                    )
+                }
+            } else {
+                switch updater {
+                case .localUser:
+                    addItem(
+                        .groupDescriptionRemoved,
+                        copy: NSLocalizedString(
+                            "GROUP_UPDATED_DESCRIPTION_REMOVED_BY_LOCAL_USER",
+                            comment: "Message indicating that the group's description was removed by the local user."
+                        )
+                    )
+                case .otherUser(let updaterName, _):
+                    let format = NSLocalizedString(
+                        "GROUP_UPDATED_DESCRIPTION_REMOVED_BY_REMOTE_USER_FORMAT",
+                        comment: "Message indicating that the group's description was removed by a remote user. Embeds {{user who removed the name}}."
+                    )
+                    addItem(.groupDescriptionRemoved, format: format, updaterName)
+                case .unknown:
+                    addItem(
+                        .groupDescriptionRemoved,
+                        copy: NSLocalizedString(
+                            "GROUP_UPDATED_DESCRIPTION_REMOVED",
+                            comment: "Message indicating that the group's description was removed."
+                        )
+                    )
+                }
+            }
+        }
     }
 
     // MARK: - Access
@@ -445,10 +516,7 @@ extension GroupUpdateCopy {
         var membershipCounts = MembershipCounts()
 
         let allUsersUnsorted = oldGroupMembership.allMembersOfAnyKind.union(newGroupMembership.allMembersOfAnyKind)
-        var allUsersSorted = allUsersUnsorted.sorted { (left, right) -> Bool in
-            // Use an arbitrary sort to ensure the output is deterministic.
-            return left.stringForDisplay > right.stringForDisplay
-        }
+        var allUsersSorted = Array(allUsersUnsorted).stableSort()
         // If local user had a membership update, ensure it appears _first_.
         if allUsersSorted.contains(localAddress) {
             allUsersSorted = [localAddress] + allUsersSorted.filter { $0 != localAddress}
@@ -515,7 +583,7 @@ extension GroupUpdateCopy {
             case .requesting:
                 switch newMembershipStatus {
                 case .normalMember:
-                    addUserRequestWasApproved(for: address)
+                    addUserRequestWasApproved(for: address, oldGroupMembership: oldGroupMembership)
                 case .invited:
                     addUserWasInvitedToTheGroup(for: address,
                                                 membershipCounts: &membershipCounts)
@@ -1130,10 +1198,17 @@ extension GroupUpdateCopy {
                         address: address,
                         format: format, updaterName)
             case .unknown:
-                addItem(.userMembershipState_added,
-                        address: address,
-                        copy: NSLocalizedString("GROUP_LOCAL_USER_WAS_ADDED_TO_THE_GROUP",
-                                                comment: "Message indicating that the local user was added to the group."))
+                if newGroupModel.didJustAddSelfViaGroupLinkV2 {
+                    addItem(.userMembershipState_added,
+                            address: localAddress,
+                            copy: NSLocalizedString("GROUP_LOCAL_USER_JOINED_THE_GROUP",
+                                                    comment: "Message indicating that the local user has joined the group."))
+                } else {
+                    addItem(.userMembershipState_added,
+                            address: localAddress,
+                            copy: NSLocalizedString("GROUP_LOCAL_USER_WAS_ADDED_TO_THE_GROUP",
+                                                    comment: "Message indicating that the local user was added to the group."))
+                }
             }
         } else {
             let userName = contactsManager.displayName(for: address, transaction: transaction)
@@ -1331,7 +1406,8 @@ extension GroupUpdateCopy {
         }
     }
 
-    mutating func addUserRequestWasApproved(for address: SignalServiceAddress) {
+    mutating func addUserRequestWasApproved(for address: SignalServiceAddress,
+                                            oldGroupMembership: GroupMembership) {
         let isLocalUser = localAddress == address
         if isLocalUser {
             switch updater {
@@ -1344,10 +1420,19 @@ extension GroupUpdateCopy {
                         address: address,
                         copy: NSLocalizedString("GROUP_LOCAL_USER_WAS_ADDED_TO_THE_GROUP",
                                                 comment: "Message indicating that the local user was added to the group."))
-            case .otherUser(let updaterName, _):
-                let format = NSLocalizedString("GROUP_LOCAL_USER_REQUEST_APPROVED_BY_REMOTE_USER_FORMAT",
-                                               comment: "Message indicating that the local user's request to join the group was approved by another user. Embeds {{ %@ the name of the user who approved the reuqest }}.")
-                addItem(.userMembershipState, address: address, format: format, updaterName)
+            case .otherUser(let updaterName, let updaterAddress):
+                // A user with a "pending request to join the group" can be "added" or "approved".
+                // If the adder was an admin, we treat this as "approved".
+                if oldGroupMembership.isFullMemberAndAdministrator(updaterAddress) {
+                    let format = NSLocalizedString("GROUP_LOCAL_USER_REQUEST_APPROVED_BY_REMOTE_USER_FORMAT",
+                                                   comment: "Message indicating that the local user's request to join the group was approved by another user. Embeds {{ %@ the name of the user who approved the reuqest }}.")
+                    addItem(.userMembershipState, address: address, format: format, updaterName)
+                } else {
+                    addItem(.userMembershipState_added,
+                            address: address,
+                            copy: NSLocalizedString("GROUP_LOCAL_USER_WAS_ADDED_TO_THE_GROUP",
+                                                    comment: "Message indicating that the local user was added to the group."))
+                }
             case .unknown:
                 addItem(.userMembershipState_added,
                         address: address,
@@ -1358,17 +1443,41 @@ extension GroupUpdateCopy {
             let requesterName = contactsManager.displayName(for: address, transaction: transaction)
             switch updater {
             case .localUser:
-                let format = NSLocalizedString("GROUP_REMOTE_USER_REQUEST_APPROVED_BY_LOCAL_USER_FORMAT",
-                                               comment: "Message indicating that a remote user's request to join the group was approved by the local user. Embeds {{requesting user name}}.")
-                addItem(.userMembershipState, address: address, format: format, requesterName)
-            case .otherUser(let updaterName, _):
-                let format = NSLocalizedString("GROUP_REMOTE_USER_REQUEST_APPROVED_BY_REMOTE_USER_FORMAT",
-                                               comment: "Message indicating that a remote user's request to join the group was approved by another user. Embeds {{ %1$@ requesting user name, %2$@ approving user name }}.")
-                addItem(.userMembershipState, address: address, format: format, requesterName, updaterName)
+                // A user with a "pending request to join the group" can be "added" or "approved".
+                // If the adder was an admin, we treat this as "approved".
+                if oldGroupMembership.isFullMemberAndAdministrator(localAddress) {
+                    let format = NSLocalizedString("GROUP_REMOTE_USER_REQUEST_APPROVED_BY_LOCAL_USER_FORMAT",
+                                                   comment: "Message indicating that a remote user's request to join the group was approved by the local user. Embeds {{requesting user name}}.")
+                    addItem(.userMembershipState, address: address, format: format, requesterName)
+                } else {
+                    let format = NSLocalizedString("GROUP_REMOTE_USER_ADDED_TO_GROUP_BY_LOCAL_USER_FORMAT",
+                                                   comment: "Message indicating that a remote user was added to the group by the local user. Embeds {{remote user name}}.")
+                    addItem(.userMembershipState_added,
+                            address: address,
+                            format: format, requesterName)
+                }
+            case .otherUser(let updaterName, let updaterAddress):
+                // A user with a "pending request to join the group" can be "added" or "approved".
+                // If the adder was an admin, we treat this as "approved".
+                if oldGroupMembership.isFullMemberAndAdministrator(updaterAddress) {
+                    let format = NSLocalizedString("GROUP_REMOTE_USER_REQUEST_APPROVED_BY_REMOTE_USER_FORMAT",
+                                                   comment: "Message indicating that a remote user's request to join the group was approved by another user. Embeds {{ %1$@ requesting user name, %2$@ approving user name }}.")
+                    addItem(.userMembershipState, address: address, format: format, requesterName, updaterName)
+                } else {
+                    let format = NSLocalizedString("GROUP_REMOTE_USER_ADDED_TO_GROUP_BY_REMOTE_USER_FORMAT",
+                                                   comment: "Message indicating that a remote user was added to the group by another user. Embeds {{ %1$@ user who added the user, %2$@ user who was added}}.")
+                    addItem(.userMembershipState_added,
+                            address: address,
+                            format: format, updaterName, requesterName)
+                }
             case .unknown:
-                let format = NSLocalizedString("GROUP_REMOTE_USER_REQUEST_APPROVED_FORMAT",
-                                               comment: "Message indicating that a remote user's request to join the group was approved. Embeds {{requesting user name}}.")
-                addItem(.userMembershipState, address: address, format: format, requesterName)
+                // If we don't know who added the user we can't infer whether
+                // they were "added" or "approved".
+                let format = NSLocalizedString("GROUP_REMOTE_USER_JOINED_GROUP_FORMAT",
+                                               comment: "Message indicating that a remote user was added to the group. Embeds {{remote user name}}.")
+                addItem(.userMembershipState_added,
+                        address: address,
+                        format: format, requesterName)
             }
         }
     }
@@ -1427,8 +1536,18 @@ extension GroupUpdateCopy {
 
         guard let oldToken = oldToken else {
             if newToken.isEnabled {
-                let format = NSLocalizedString("DISAPPEARING_MESSAGES_CONFIGURATION_GROUP_EXISTING_FORMAT",
-                                               comment: "Info Message when added to a group which has enabled disappearing messages. Embeds {{time amount}} before messages disappear. See the *_TIME_AMOUNT strings for context.")
+                let format: String
+                if updater == .localUser {
+                    format = NSLocalizedString(
+                        "YOU_UPDATED_DISAPPEARING_MESSAGES_CONFIGURATION",
+                        comment: "Info Message when you update disappearing messages duration. Embeds a {{time amount}} before messages disappear. see the *_TIME_AMOUNT strings for context."
+                    )
+                } else {
+                    format = NSLocalizedString(
+                        "DISAPPEARING_MESSAGES_CONFIGURATION_GROUP_EXISTING_FORMAT",
+                        comment: "Info Message when added to a group which has enabled disappearing messages. Embeds {{time amount}} before messages disappear. See the *_TIME_AMOUNT strings for context."
+                    )
+                }
                 addItem(.disappearingMessagesState_enabled, format: format, durationString)
             }
             return
@@ -1653,14 +1772,21 @@ extension GroupUpdateCopy {
                         address: localAddress,
                         format: format, updaterName)
             default:
-                addItem(.userMembershipState_added,
-                        address: localAddress,
-                        copy: NSLocalizedString("GROUP_LOCAL_USER_WAS_ADDED_TO_THE_GROUP",
-                                                comment: "Message indicating that the local user was added to the group."))
+                if newGroupModel.didJustAddSelfViaGroupLink {
+                    addItem(.userMembershipState_added,
+                            address: localAddress,
+                            copy: NSLocalizedString("GROUP_LOCAL_USER_JOINED_THE_GROUP",
+                                                    comment: "Message indicating that the local user has joined the group."))
+                } else {
+                    addItem(.userMembershipState_added,
+                            address: localAddress,
+                            copy: NSLocalizedString("GROUP_LOCAL_USER_WAS_ADDED_TO_THE_GROUP",
+                                                    comment: "Message indicating that the local user was added to the group."))
+                }
             }
         case .invited:
             if let localAddress = Self.tsAccountManager.localAddress,
-                let inviterUuid = newGroupMembership.addedByUuid(forInvitedMember: localAddress) {
+               let inviterUuid = newGroupMembership.addedByUuid(forInvitedMember: localAddress) {
                 let inviterAddress = SignalServiceAddress(uuid: inviterUuid)
                 let inviterName = contactsManager.displayName(for: inviterAddress, transaction: transaction)
                 let format = NSLocalizedString("GROUP_LOCAL_USER_INVITED_BY_REMOTE_USER_FORMAT",
@@ -1687,6 +1813,12 @@ extension GroupUpdateCopy {
                 addItem(.debug, copy: "Error: Learned of group without any membership status.")
             }
         }
+    }
+
+    mutating func addWasJustCreatedByLocalUserUpdates() {
+        addItem(.groupGroupLinkPromotion,
+                copy: NSLocalizedString("GROUP_LINK_PROMOTION_UPDATE",
+                                        comment: "Suggestion to invite more group members via the group invite link."))
     }
 
     // MARK: - Migration
@@ -1776,7 +1908,7 @@ extension GroupUpdateCopy {
 
     // MARK: - Updater
 
-    enum Updater {
+    enum Updater: Equatable {
         case localUser
         case otherUser(updaterName: String, updaterAddress: SignalServiceAddress)
         case unknown

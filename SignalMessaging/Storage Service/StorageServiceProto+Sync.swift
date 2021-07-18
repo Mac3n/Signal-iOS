@@ -1,5 +1,5 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 import Foundation
@@ -7,42 +7,14 @@ import SwiftProtobuf
 
 // MARK: - Contact Record
 
-extension StorageServiceProtoContactRecord {
-
-    // MARK: - Dependencies
-
-    static var profileManager: OWSProfileManager {
-        return .shared()
-    }
-
-    var profileManager: OWSProfileManager {
-        return .shared()
-    }
-
-    static var blockingManager: OWSBlockingManager {
-        return .shared()
-    }
-
-    var blockingManager: OWSBlockingManager {
-        return .shared()
-    }
-
-    static var identityManager: OWSIdentityManager {
-        return .shared()
-    }
-
-    var identityManager: OWSIdentityManager {
-        return .shared()
-    }
-
-    // MARK: -
+extension StorageServiceProtoContactRecord: Dependencies {
 
     static func build(
         for accountId: AccountId,
         unknownFields: SwiftProtobuf.UnknownStorage? = nil,
         transaction: SDSAnyReadTransaction
     ) throws -> StorageServiceProtoContactRecord {
-        guard let address = OWSAccountIdFinder().address(forAccountId: accountId, transaction: transaction) else {
+        guard let address = OWSAccountIdFinder.address(forAccountId: accountId, transaction: transaction) else {
             throw StorageService.StorageError.accountMissing
         }
 
@@ -58,8 +30,8 @@ extension StorageServiceProtoContactRecord {
 
         let isInWhitelist = profileManager.isUser(inProfileWhitelist: address, transaction: transaction)
         let profileKey = profileManager.profileKeyData(for: address, transaction: transaction)
-        let profileGivenName = profileManager.unfilteredGivenName(for: address, transaction: transaction)
-        let profileFamilyName = profileManager.unfilteredFamilyName(for: address, transaction: transaction)
+        let profileGivenName = profileManagerImpl.unfilteredGivenName(for: address, transaction: transaction)
+        let profileFamilyName = profileManagerImpl.unfilteredFamilyName(for: address, transaction: transaction)
 
         builder.setBlocked(blockingManager.isAddressBlocked(address))
         builder.setWhitelisted(isInWhitelist)
@@ -88,9 +60,14 @@ extension StorageServiceProtoContactRecord {
         }
 
         if let thread = TSContactThread.getWithContactAddress(address, transaction: transaction) {
-            builder.setArchived(thread.isArchived)
-            builder.setMarkedUnread(thread.isMarkedUnread)
+            let threadAssociatedData = ThreadAssociatedData.fetchOrDefault(for: thread, transaction: transaction)
+
+            builder.setArchived(threadAssociatedData.isArchived)
+            builder.setMarkedUnread(threadAssociatedData.isMarkedUnread)
+            builder.setMutedUntilTimestamp(threadAssociatedData.mutedUntilTimestamp)
         }
+
+        // Unknown
 
         if let unknownFields = unknownFields {
             builder.setUnknownFields(unknownFields)
@@ -132,8 +109,8 @@ extension StorageServiceProtoContactRecord {
 
         // Gather some local contact state to do comparisons against.
         let localProfileKey = profileManager.profileKey(for: address, transaction: transaction)
-        let localGivenName = profileManager.unfilteredGivenName(for: address, transaction: transaction)
-        let localFamilyName = profileManager.unfilteredFamilyName(for: address, transaction: transaction)
+        let localGivenName = profileManagerImpl.unfilteredGivenName(for: address, transaction: transaction)
+        let localFamilyName = profileManagerImpl.unfilteredFamilyName(for: address, transaction: transaction)
         let localIdentityKey = identityManager.identityKey(for: address, transaction: transaction)
         let localIdentityState = identityManager.verificationState(for: address, transaction: transaction)
         let localIsBlocked = blockingManager.isAddressBlocked(address)
@@ -144,7 +121,7 @@ extension StorageServiceProtoContactRecord {
             profileManager.setProfileKeyData(
                 profileKey,
                 for: address,
-                wasLocallyInitiated: false,
+                userProfileWriter: .storageService,
                 transaction: transaction
             )
 
@@ -153,14 +130,24 @@ extension StorageServiceProtoContactRecord {
             mergeState = .needsUpdate(recipient.accountId)
         }
 
-        if hasGivenName && localGivenName != givenName || hasFamilyName && localFamilyName != familyName {
-            profileManager.setProfileGivenName(
-                givenName,
-                familyName: familyName,
-                for: address,
-                wasLocallyInitiated: false,
-                transaction: transaction
-            )
+        // Given name can never be cleared, so ignore all info
+        // about the profile if there's no given name.
+        if hasGivenName && (localGivenName != givenName || localFamilyName != familyName) {
+            // If we already have a profile for this user, ignore
+            // any content received via storage service. Instead,
+            // we'll just kick off a fetch of that user's profile
+            // to make sure everything is up-to-date.
+            if localGivenName != nil {
+                Self.bulkProfileFetch.fetchProfile(address: address)
+            } else {
+                profileManager.setProfileGivenName(
+                    givenName,
+                    familyName: familyName,
+                    for: address,
+                    userProfileWriter: .storageService,
+                    transaction: transaction
+                )
+            }
         } else if localGivenName != nil && !hasGivenName || localFamilyName != nil && !hasFamilyName {
             mergeState = .needsUpdate(recipient.accountId)
         }
@@ -195,28 +182,29 @@ extension StorageServiceProtoContactRecord {
         // If our local whitelisted state differs from the service state, use the service's value.
         if whitelisted != localIsWhitelisted {
             if whitelisted {
-                profileManager.addUser(toProfileWhitelist: address, wasLocallyInitiated: false, transaction: transaction)
+                profileManager.addUser(toProfileWhitelist: address,
+                                       userProfileWriter: .storageService,
+                                       transaction: transaction)
             } else {
-                profileManager.removeUser(fromProfileWhitelist: address, wasLocallyInitiated: false, transaction: transaction)
+                profileManager.removeUser(fromProfileWhitelist: address,
+                                          userProfileWriter: .storageService,
+                                          transaction: transaction)
             }
         }
 
-        if let localThread = TSContactThread.getWithContactAddress(address, transaction: transaction) {
-            if archived != localThread.isArchived {
-                if archived {
-                    localThread.archiveThread(updateStorageService: false, transaction: transaction)
-                } else {
-                    localThread.unarchiveThread(updateStorageService: false, transaction: transaction)
-                }
-            }
+        let localThread = TSContactThread.getOrCreateThread(withContactAddress: address, transaction: transaction)
+        let localThreadAssociatedData = ThreadAssociatedData.fetchOrDefault(for: localThread, transaction: transaction)
 
-            if markedUnread != localThread.isMarkedUnread {
-                if markedUnread {
-                    localThread.markAsUnread(updateStorageService: false, transaction: transaction)
-                } else {
-                    localThread.clearMarkedAsUnread(updateStorageService: false, transaction: transaction)
-                }
-            }
+        if archived != localThreadAssociatedData.isArchived {
+            localThreadAssociatedData.updateWith(isArchived: archived, updateStorageService: false, transaction: transaction)
+        }
+
+        if markedUnread != localThreadAssociatedData.isMarkedUnread {
+            localThreadAssociatedData.updateWith(isMarkedUnread: markedUnread, updateStorageService: false, transaction: transaction)
+        }
+
+        if mutedUntilTimestamp != localThreadAssociatedData.mutedUntilTimestamp {
+            localThreadAssociatedData.updateWith(mutedUntilTimestamp: mutedUntilTimestamp, updateStorageService: false, transaction: transaction)
         }
 
         return mergeState
@@ -254,27 +242,7 @@ extension StorageServiceProtoContactRecordIdentityState {
 
 // MARK: - Group V1 Record
 
-extension StorageServiceProtoGroupV1Record {
-
-    // MARK: - Dependencies
-
-    static var profileManager: OWSProfileManager {
-        return .shared()
-    }
-
-    var profileManager: OWSProfileManager {
-        return .shared()
-    }
-
-    static var blockingManager: OWSBlockingManager {
-        return .shared()
-    }
-
-    var blockingManager: OWSBlockingManager {
-        return .shared()
-    }
-
-    // MARK: -
+extension StorageServiceProtoGroupV1Record: Dependencies {
 
     static func build(
         for groupId: Data,
@@ -287,10 +255,14 @@ extension StorageServiceProtoGroupV1Record {
         builder.setWhitelisted(profileManager.isGroupId(inProfileWhitelist: groupId, transaction: transaction))
         builder.setBlocked(blockingManager.isGroupIdBlocked(groupId))
 
-        if let thread = TSGroupThread.fetch(groupId: groupId, transaction: transaction) {
-            builder.setArchived(thread.isArchived)
-            builder.setMarkedUnread(thread.isMarkedUnread)
-        }
+        let threadId = TSGroupThread.threadId(forGroupId: groupId, transaction: transaction)
+        let threadAssociatedData = ThreadAssociatedData.fetchOrDefault(for: threadId,
+                                                                       ignoreMissing: true,
+                                                                       transaction: transaction)
+
+        builder.setArchived(threadAssociatedData.isArchived)
+        builder.setMarkedUnread(threadAssociatedData.isMarkedUnread)
+        builder.setMutedUntilTimestamp(threadAssociatedData.mutedUntilTimestamp)
 
         if let unknownFields = unknownFields {
             builder.setUnknownFields(unknownFields)
@@ -341,28 +313,30 @@ extension StorageServiceProtoGroupV1Record {
         // If our local whitelisted state differs from the service state, use the service's value.
         if whitelisted != localIsWhitelisted {
             if whitelisted {
-                profileManager.addGroupId(toProfileWhitelist: id, wasLocallyInitiated: false, transaction: transaction)
+                profileManager.addGroupId(toProfileWhitelist: id,
+                                          userProfileWriter: .storageService,
+                                          transaction: transaction)
             } else {
-                profileManager.removeGroupId(fromProfileWhitelist: id, wasLocallyInitiated: false, transaction: transaction)
+                profileManager.removeGroupId(fromProfileWhitelist: id,
+                                             userProfileWriter: .storageService,
+                                             transaction: transaction)
             }
         }
 
-        if let localThread = TSGroupThread.fetch(groupId: id, transaction: transaction) {
-            if archived != localThread.isArchived {
-                if archived {
-                    localThread.archiveThread(updateStorageService: false, transaction: transaction)
-                } else {
-                    localThread.unarchiveThread(updateStorageService: false, transaction: transaction)
-                }
-            }
+        let localThreadId = TSGroupThread.threadId(forGroupId: id, transaction: transaction)
+        ThreadAssociatedData.createIfMissing(for: localThreadId, transaction: transaction)
+        let localThreadAssociatedData = ThreadAssociatedData.fetchOrDefault(for: localThreadId, transaction: transaction)
 
-            if markedUnread != localThread.isMarkedUnread {
-                if markedUnread {
-                    localThread.markAsUnread(updateStorageService: false, transaction: transaction)
-                } else {
-                    localThread.clearMarkedAsUnread(updateStorageService: false, transaction: transaction)
-                }
-            }
+        if archived != localThreadAssociatedData.isArchived {
+            localThreadAssociatedData.updateWith(isArchived: archived, updateStorageService: false, transaction: transaction)
+        }
+
+        if markedUnread != localThreadAssociatedData.isMarkedUnread {
+            localThreadAssociatedData.updateWith(isMarkedUnread: markedUnread, updateStorageService: false, transaction: transaction)
+        }
+
+        if mutedUntilTimestamp != localThreadAssociatedData.mutedUntilTimestamp {
+            localThreadAssociatedData.updateWith(mutedUntilTimestamp: mutedUntilTimestamp, updateStorageService: false, transaction: transaction)
         }
 
         return .resolved(id)
@@ -371,35 +345,7 @@ extension StorageServiceProtoGroupV1Record {
 
 // MARK: - Group V2 Record
 
-extension StorageServiceProtoGroupV2Record {
-
-    // MARK: - Dependencies
-
-    static var profileManager: OWSProfileManager {
-        return .shared()
-    }
-
-    var profileManager: OWSProfileManager {
-        return .shared()
-    }
-
-    static var blockingManager: OWSBlockingManager {
-        return .shared()
-    }
-
-    var blockingManager: OWSBlockingManager {
-        return .shared()
-    }
-
-    static var groupsV2: GroupsV2 {
-        return SSKEnvironment.shared.groupsV2
-    }
-
-    var groupsV2: GroupsV2 {
-        return SSKEnvironment.shared.groupsV2
-    }
-
-    // MARK: -
+extension StorageServiceProtoGroupV2Record: Dependencies {
 
     static func build(
         for masterKeyData: Data,
@@ -419,10 +365,14 @@ extension StorageServiceProtoGroupV2Record {
         builder.setWhitelisted(profileManager.isGroupId(inProfileWhitelist: groupId, transaction: transaction))
         builder.setBlocked(blockingManager.isGroupIdBlocked(groupId))
 
-        if let thread = TSGroupThread.fetch(groupId: groupId, transaction: transaction) {
-            builder.setArchived(thread.isArchived)
-            builder.setMarkedUnread(thread.isMarkedUnread)
-        }
+        let threadId = TSGroupThread.threadId(forGroupId: groupId, transaction: transaction)
+        let threadAssociatedData = ThreadAssociatedData.fetchOrDefault(for: threadId,
+                                                                       ignoreMissing: true,
+                                                                       transaction: transaction)
+
+        builder.setArchived(threadAssociatedData.isArchived)
+        builder.setMarkedUnread(threadAssociatedData.isMarkedUnread)
+        builder.setMutedUntilTimestamp(threadAssociatedData.mutedUntilTimestamp)
 
         if let unknownFields = unknownFields {
             builder.setUnknownFields(unknownFields)
@@ -510,28 +460,31 @@ extension StorageServiceProtoGroupV2Record {
         // If our local whitelisted state differs from the service state, use the service's value.
         if whitelisted != localIsWhitelisted {
             if whitelisted {
-                profileManager.addGroupId(toProfileWhitelist: groupId, wasLocallyInitiated: false, transaction: transaction)
+                profileManager.addGroupId(toProfileWhitelist: groupId,
+                                          userProfileWriter: .storageService,
+                                          transaction: transaction)
             } else {
-                profileManager.removeGroupId(fromProfileWhitelist: groupId, wasLocallyInitiated: false, transaction: transaction)
+                profileManager.removeGroupId(fromProfileWhitelist: groupId,
+                                             userProfileWriter: .storageService,
+                                             transaction: transaction)
             }
         }
 
-        if let localThread = TSGroupThread.fetch(groupId: groupId, transaction: transaction) {
-            if archived != localThread.isArchived {
-                if archived {
-                    localThread.archiveThread(updateStorageService: false, transaction: transaction)
-                } else {
-                    localThread.unarchiveThread(updateStorageService: false, transaction: transaction)
-                }
-            }
+        let localThreadId = TSGroupThread.threadId(forGroupId: groupId, transaction: transaction)
+        ThreadAssociatedData.createIfMissing(for: localThreadId, transaction: transaction)
+        let localThreadAssociatedData = ThreadAssociatedData.fetchOrDefault(for: localThreadId,
+                                                                            transaction: transaction)
 
-            if markedUnread != localThread.isMarkedUnread {
-                if markedUnread {
-                    localThread.markAsUnread(updateStorageService: false, transaction: transaction)
-                } else {
-                    localThread.clearMarkedAsUnread(updateStorageService: false, transaction: transaction)
-                }
-            }
+        if archived != localThreadAssociatedData.isArchived {
+            localThreadAssociatedData.updateWith(isArchived: archived, updateStorageService: false, transaction: transaction)
+        }
+
+        if markedUnread != localThreadAssociatedData.isMarkedUnread {
+            localThreadAssociatedData.updateWith(isMarkedUnread: markedUnread, updateStorageService: false, transaction: transaction)
+        }
+
+        if mutedUntilTimestamp != localThreadAssociatedData.mutedUntilTimestamp {
+            localThreadAssociatedData.updateWith(mutedUntilTimestamp: mutedUntilTimestamp, updateStorageService: false, transaction: transaction)
         }
 
         return mergeState
@@ -540,59 +493,7 @@ extension StorageServiceProtoGroupV2Record {
 
 // MARK: - Account Record
 
-extension StorageServiceProtoAccountRecord {
-
-    // MARK: - Dependencies
-
-    static var readReceiptManager: OWSReadReceiptManager {
-        return .shared()
-    }
-
-    var readReceiptManager: OWSReadReceiptManager {
-        return .shared()
-    }
-
-    static var preferences: OWSPreferences {
-        return Environment.shared.preferences
-    }
-
-    var preferences: OWSPreferences {
-        return Environment.shared.preferences
-    }
-
-    static var typingIndicatorsManager: TypingIndicators {
-        return SSKEnvironment.shared.typingIndicators
-    }
-
-    var typingIndicatorsManager: TypingIndicators {
-        return SSKEnvironment.shared.typingIndicators
-    }
-
-    static var profileManager: OWSProfileManager {
-        return .shared()
-    }
-
-    var profileManager: OWSProfileManager {
-        return .shared()
-    }
-
-    static var tsAccountManager: TSAccountManager {
-        return .shared()
-    }
-
-    var tsAccountManager: TSAccountManager {
-        return .shared()
-    }
-
-    static var udManager: OWSUDManager {
-        return SSKEnvironment.shared.udManager
-    }
-
-    var udManager: OWSUDManager {
-        return SSKEnvironment.shared.udManager
-    }
-
-    // MARK: -
+extension StorageServiceProtoAccountRecord: Dependencies {
 
     static func build(
         unknownFields: SwiftProtobuf.UnknownStorage? = nil,
@@ -608,10 +509,10 @@ extension StorageServiceProtoAccountRecord {
             builder.setProfileKey(profileKey)
         }
 
-        if let profileGivenName = profileManager.unfilteredGivenName(for: localAddress, transaction: transaction) {
+        if let profileGivenName = profileManagerImpl.unfilteredGivenName(for: localAddress, transaction: transaction) {
             builder.setGivenName(profileGivenName)
         }
-        if let profileFamilyName = profileManager.unfilteredFamilyName(for: localAddress, transaction: transaction) {
+        if let profileFamilyName = profileManagerImpl.unfilteredFamilyName(for: localAddress, transaction: transaction) {
             builder.setFamilyName(profileFamilyName)
         }
 
@@ -620,17 +521,19 @@ extension StorageServiceProtoAccountRecord {
         }
 
         if let thread = TSContactThread.getWithContactAddress(localAddress, transaction: transaction) {
-            builder.setNoteToSelfArchived(thread.isArchived)
-            builder.setNoteToSelfMarkedUnread(thread.isMarkedUnread)
+            let threadAssociatedData = ThreadAssociatedData.fetchOrDefault(for: thread, transaction: transaction)
+
+            builder.setNoteToSelfArchived(threadAssociatedData.isArchived)
+            builder.setNoteToSelfMarkedUnread(threadAssociatedData.isMarkedUnread)
         }
 
-        let readReceiptsEnabled = readReceiptManager.areReadReceiptsEnabled()
+        let readReceiptsEnabled = receiptManager.areReadReceiptsEnabled()
         builder.setReadReceipts(readReceiptsEnabled)
 
         let sealedSenderIndicatorsEnabled = preferences.shouldShowUnidentifiedDeliveryIndicators(transaction: transaction)
         builder.setSealedSenderIndicators(sealedSenderIndicatorsEnabled)
 
-        let typingIndicatorsEnabled = typingIndicatorsManager.areTypingIndicatorsEnabled()
+        let typingIndicatorsEnabled = typingIndicatorsImpl.areTypingIndicatorsEnabled()
         builder.setTypingIndicators(typingIndicatorsEnabled)
 
         let proxiedLinkPreviewsEnabled = SSKPreferences.areLegacyLinkPreviewsEnabled(transaction: transaction)
@@ -648,9 +551,26 @@ extension StorageServiceProtoAccountRecord {
         let pinnedConversationProtos = try PinnedThreadManager.pinnedConversationProtos(transaction: transaction)
         builder.setPinnedConversations(pinnedConversationProtos)
 
+        let preferContactAvatars = SSKPreferences.preferContactAvatars(transaction: transaction)
+        builder.setPreferContactAvatars(preferContactAvatars)
+
+        let paymentsState = paymentsSwift.paymentsState
+        var paymentsBuilder = StorageServiceProtoAccountRecordPayments.builder()
+        paymentsBuilder.setEnabled(paymentsState.isEnabled)
+        if let paymentsEntropy = paymentsState.paymentsEntropy {
+            paymentsBuilder.setPaymentsEntropy(paymentsEntropy)
+        }
+        builder.setPayments(try paymentsBuilder.build())
+
         if let unknownFields = unknownFields {
             builder.setUnknownFields(unknownFields)
         }
+
+        builder.setUniversalExpireTimer(
+            OWSDisappearingMessagesConfiguration
+                .fetchOrBuildDefaultUniversalConfiguration(with: transaction)
+                .durationSeconds
+        )
 
         return try builder.build()
     }
@@ -670,58 +590,69 @@ extension StorageServiceProtoAccountRecord {
 
         // Gather some local contact state to do comparisons against.
         let localProfileKey = profileManager.profileKey(for: localAddress, transaction: transaction)
-        let localGivenName = profileManager.unfilteredGivenName(for: localAddress, transaction: transaction)
-        let localFamilyName = profileManager.unfilteredFamilyName(for: localAddress, transaction: transaction)
+        let localGivenName = profileManagerImpl.unfilteredGivenName(for: localAddress, transaction: transaction)
+        let localFamilyName = profileManagerImpl.unfilteredFamilyName(for: localAddress, transaction: transaction)
         let localAvatarUrl = profileManager.profileAvatarURLPath(for: localAddress, transaction: transaction)
 
-        // If our local profile key record differs from what's on the service, use the service's value.
-        if let profileKey = profileKey, localProfileKey?.keyData != profileKey {
+        // On the primary device, we only ever want to
+        // take the profile key from storage service if
+        // we have no record of a local profile. This
+        // allows us to restore your profile during onboarding,
+        // but ensures no other device can ever change the profile
+        // key other than the primary device.
+        let allowsRemoteProfileKeyChanges = !profileManager.hasLocalProfile() || !tsAccountManager.isPrimaryDevice
+
+        if allowsRemoteProfileKeyChanges,
+           let profileKey = profileKey,
+           localProfileKey?.keyData != profileKey {
             profileManager.setProfileKeyData(
                 profileKey,
                 for: localAddress,
-                wasLocallyInitiated: false,
+                userProfileWriter: .storageService,
                 transaction: transaction
             )
-
-            // If we have a local profile key for this user but the service doesn't mark it as needing update.
         } else if localProfileKey != nil && !hasProfileKey {
+            // If we have a local profile key for this user but the service doesn't mark it as needing update.
             mergeState = .needsUpdate
         }
 
-        if localGivenName != givenName || localFamilyName != familyName || localAvatarUrl != avatarURL {
-            profileManager.setProfileGivenName(
-                givenName,
-                familyName: familyName,
-                avatarUrlPath: avatarURL,
-                for: localAddress,
-                wasLocallyInitiated: false,
-                transaction: transaction
-            )
+        // Given name can never be cleared, so ignore all info
+        // about the profile if there's no given name.
+        if hasGivenName && (localGivenName != givenName || localFamilyName != familyName || localAvatarUrl != avatarURL) {
+            if profileManager.hasLocalProfile() {
+                // If we have a local profile, never take any new
+                // profile data besides the key from storage service.
+                // Instead, just trigger a fetch of our profile to make
+                // sure we have the latest authoritative information.
+                profileManager.fetchLocalUsersProfile()
+            } else {
+                profileManager.setProfileGivenName(
+                    givenName,
+                    familyName: familyName,
+                    avatarUrlPath: avatarURL,
+                    for: localAddress,
+                    userProfileWriter: .storageService,
+                    transaction: transaction
+                )
+            }
         } else if localGivenName != nil && !hasGivenName || localFamilyName != nil && !hasFamilyName || localAvatarUrl != nil && !hasAvatarURL {
             mergeState = .needsUpdate
         }
 
-        if let localThread = TSContactThread.getWithContactAddress(localAddress, transaction: transaction) {
-            if noteToSelfArchived != localThread.isArchived {
-                if noteToSelfArchived {
-                    localThread.archiveThread(updateStorageService: false, transaction: transaction)
-                } else {
-                    localThread.unarchiveThread(updateStorageService: false, transaction: transaction)
-                }
-            }
+        let localThread = TSContactThread.getOrCreateThread(withContactAddress: localAddress, transaction: transaction)
+        let localThreadAssociatedData = ThreadAssociatedData.fetchOrDefault(for: localThread, transaction: transaction)
 
-            if noteToSelfMarkedUnread != localThread.isMarkedUnread {
-                if noteToSelfMarkedUnread {
-                    localThread.markAsUnread(updateStorageService: false, transaction: transaction)
-                } else {
-                    localThread.clearMarkedAsUnread(updateStorageService: false, transaction: transaction)
-                }
-            }
+        if noteToSelfArchived != localThreadAssociatedData.isArchived {
+            localThreadAssociatedData.updateWith(isArchived: noteToSelfArchived, updateStorageService: false, transaction: transaction)
         }
 
-        let localReadReceiptsEnabled = readReceiptManager.areReadReceiptsEnabled()
+        if noteToSelfMarkedUnread != localThreadAssociatedData.isMarkedUnread {
+            localThreadAssociatedData.updateWith(isMarkedUnread: noteToSelfMarkedUnread, updateStorageService: false, transaction: transaction)
+        }
+
+        let localReadReceiptsEnabled = receiptManager.areReadReceiptsEnabled()
         if readReceipts != localReadReceiptsEnabled {
-            readReceiptManager.setAreReadReceiptsEnabled(readReceipts, transaction: transaction)
+            receiptManager.setAreReadReceiptsEnabled(readReceipts, transaction: transaction)
         }
 
         let sealedSenderIndicatorsEnabled = preferences.shouldShowUnidentifiedDeliveryIndicators(transaction: transaction)
@@ -729,9 +660,9 @@ extension StorageServiceProtoAccountRecord {
             preferences.setShouldShowUnidentifiedDeliveryIndicators(sealedSenderIndicators, transaction: transaction)
         }
 
-        let typingIndicatorsEnabled = typingIndicatorsManager.areTypingIndicatorsEnabled()
+        let typingIndicatorsEnabled = typingIndicatorsImpl.areTypingIndicatorsEnabled()
         if typingIndicators != typingIndicatorsEnabled {
-            typingIndicatorsManager.setTypingIndicatorsEnabled(value: typingIndicators, transaction: transaction)
+            typingIndicatorsImpl.setTypingIndicatorsEnabled(value: typingIndicators, transaction: transaction)
         }
 
         let linkPreviewsEnabled = SSKPreferences.areLinkPreviewsEnabled(transaction: transaction)
@@ -772,6 +703,40 @@ extension StorageServiceProtoAccountRecord {
         } catch {
             owsFailDebug("Failed to process pinned conversations \(error)")
             mergeState = .needsUpdate
+        }
+
+        let localPrefersContactAvatars = SSKPreferences.preferContactAvatars(transaction: transaction)
+        if preferContactAvatars != localPrefersContactAvatars {
+            SSKPreferences.setPreferContactAvatars(
+                preferContactAvatars,
+                updateStorageService: false,
+                transaction: transaction)
+        }
+
+        let localPaymentsState = Self.paymentsSwift.paymentsState
+        let servicePaymentsState = PaymentsState.build(arePaymentsEnabled: self.payments?.enabled ?? false,
+                                                       paymentsEntropy: self.payments?.paymentsEntropy)
+        if localPaymentsState != servicePaymentsState {
+            // Merge with payments states.
+            //
+            // 1. Honor "arePaymentsEnabled" from the service.
+            let arePaymentsEnabled = servicePaymentsState.isEnabled
+            // 2. Prefer paymentsEntropy from service, but try to retain local
+            //    paymentsEntropy otherwise.
+            let paymentsEntropy = servicePaymentsState.paymentsEntropy ?? localPaymentsState.paymentsEntropy
+            let mergedPaymentsState = PaymentsState.build(arePaymentsEnabled: arePaymentsEnabled,
+                                                          paymentsEntropy: paymentsEntropy)
+
+            Self.paymentsSwift.setPaymentsState(mergedPaymentsState,
+                                                updateStorageService: false,
+                                                transaction: transaction)
+        }
+
+        let localConfiguration = OWSDisappearingMessagesConfiguration.fetchOrBuildDefaultUniversalConfiguration(with: transaction)
+        let localExpireToken = localConfiguration.asToken
+        let remoteExpireToken = DisappearingMessageToken.token(forProtoExpireTimer: universalExpireTimer)
+        if localExpireToken != remoteExpireToken {
+            localConfiguration.applyToken(remoteExpireToken, transaction: transaction)
         }
 
         return mergeState
@@ -818,10 +783,6 @@ extension Data {
 // MARK: -
 
 extension PinnedThreadManager {
-    static var groupsV2: GroupsV2 {
-        SSKEnvironment.shared.groupsV2
-    }
-
     public class func processPinnedConversationsProto(
         _ pinnedConversations: [StorageServiceProtoAccountRecordPinnedConversation],
         transaction: SDSAnyWriteTransaction

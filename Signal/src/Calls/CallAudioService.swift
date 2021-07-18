@@ -1,5 +1,5 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 import Foundation
@@ -9,7 +9,7 @@ import SignalMessaging
 import AVKit
 import SignalRingRTC
 
-protocol CallAudioServiceDelegate: class {
+protocol CallAudioServiceDelegate: AnyObject {
     func callAudioServiceDidChangeAudioSession(_ callAudioService: CallAudioService)
     func callAudioServiceDidChangeAudioSource(_ callAudioService: CallAudioService, audioSource: AudioSource?)
 }
@@ -17,7 +17,7 @@ protocol CallAudioServiceDelegate: class {
 @objc class CallAudioService: NSObject, CallObserver {
 
     private var vibrateTimer: Timer?
-    private let audioPlayer = AVAudioPlayer()
+
     var handleRinging = false
     weak var delegate: CallAudioServiceDelegate? {
         willSet {
@@ -31,10 +31,6 @@ protocol CallAudioServiceDelegate: class {
     // Our ring buzz is a pair of vibrations.
     // `pulseDuration` is the small pause between the two vibrations in the pair.
     private let pulseDuration = 0.2
-
-    var audioSession: OWSAudioSession {
-        return Environment.shared.audioSession
-    }
 
     var avAudioSession: AVAudioSession {
         return AVAudioSession.sharedInstance()
@@ -55,7 +51,7 @@ protocol CallAudioServiceDelegate: class {
             self.audioRouteDidChange()
         }
 
-        AppEnvironment.shared.callService.addObserverAndSyncState(observer: self)
+        Self.callService.addObserverAndSyncState(observer: self)
     }
 
     deinit {
@@ -152,15 +148,15 @@ protocol CallAudioServiceDelegate: class {
         case .group(let call):
             ensureProperAudioSession(call: call)
         default:
-            // Revert to default audio
-            setAudioSession(category: .soloAmbient, mode: .default)
+            // Revert to ambient audio
+            setAudioSession(category: .ambient, mode: .default)
         }
     }
 
     private func ensureProperAudioSession(call: GroupCall?) {
         guard let call = call, call.localDeviceState.joinState != .notJoined else {
-            // Revert to default audio
-            setAudioSession(category: .soloAmbient, mode: .default)
+            // Revert to ambient audio
+            setAudioSession(category: .ambient, mode: .default)
             return
         }
 
@@ -175,8 +171,8 @@ protocol CallAudioServiceDelegate: class {
         AssertIsOnMainThread()
 
         guard let call = call, !call.isEnded else {
-            // Revert to default audio
-            setAudioSession(category: .soloAmbient,
+            // Revert to ambient audio
+            setAudioSession(category: .ambient,
                             mode: .default)
             return
         }
@@ -341,8 +337,8 @@ protocol CallAudioServiceDelegate: class {
             audioPlayer.stop()
         }
 
-        // Stop solo audio, revert to default.
-        setAudioSession(category: .soloAmbient)
+        // Stop solo audio, revert to ambient.
+        setAudioSession(category: .ambient)
     }
 
     // MARK: Playing Sounds

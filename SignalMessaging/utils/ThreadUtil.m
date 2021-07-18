@@ -1,5 +1,5 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 #import "ThreadUtil.h"
@@ -25,33 +25,6 @@ NS_ASSUME_NONNULL_BEGIN
 
 @implementation ThreadUtil
 
-#pragma mark - Dependencies
-
-+ (MessageSenderJobQueue *)messageSenderJobQueue
-{
-    return SSKEnvironment.shared.messageSenderJobQueue;
-}
-
-+ (SDSDatabaseStorage *)databaseStorage
-{
-    return SSKEnvironment.shared.databaseStorage;
-}
-
-+ (OWSProfileManager *)profileManager
-{
-    return SSKEnvironment.shared.profileManager;
-}
-
-+ (TSAccountManager *)tsAccountManager
-{
-    return SSKEnvironment.shared.tsAccountManager;
-}
-
-+ (MessageSender *)messageSender
-{
-    return SSKEnvironment.shared.messageSender;
-}
-
 #pragma mark - Durable Message Enqueue
 
 + (TSOutgoingMessage *)enqueueMessageWithBody:(MessageBody *)messageBody
@@ -75,31 +48,13 @@ NS_ASSUME_NONNULL_BEGIN
                              linkPreviewDraft:(nullable nullable OWSLinkPreviewDraft *)linkPreviewDraft
                                   transaction:(SDSAnyReadTransaction *)transaction
 {
-    OWSAssertIsOnMainThread();
-    OWSAssertDebug(thread);
-
-    OutgoingMessagePreparer *outgoingMessagePreparer =
-        [[OutgoingMessagePreparer alloc] initWithMessageBody:messageBody
-                                            mediaAttachments:mediaAttachments
-                                                      thread:thread
-                                            quotedReplyModel:quotedReplyModel
-                                                 transaction:transaction];
-
-    [BenchManager benchAsyncWithTitle:@"Saving outgoing message"
-                                block:^(void (^benchmarkCompletion)(void)) {
-                                    DatabaseStorageAsyncWrite(
-                                        SDSDatabaseStorage.shared, ^(SDSAnyWriteTransaction *writeTransaction) {
-                                            [outgoingMessagePreparer
-                                                insertMessageWithLinkPreviewDraft:linkPreviewDraft
-                                                                      transaction:writeTransaction];
-                                            [self.messageSenderJobQueue addMessage:outgoingMessagePreparer
-                                                                       transaction:writeTransaction];
-
-                                            [writeTransaction addAsyncCompletion:benchmarkCompletion];
-                                        });
-                                }];
-
-    return outgoingMessagePreparer.unpreparedMessage;
+    return [[self class] enqueueMessageWithBody:messageBody
+                               mediaAttachments:mediaAttachments
+                                         thread:thread
+                               quotedReplyModel:quotedReplyModel
+                               linkPreviewDraft:linkPreviewDraft
+                   persistenceCompletionHandler:nil
+                                    transaction:transaction];
 }
 
 + (nullable TSOutgoingMessage *)createUnsentMessageWithBody:(nullable MessageBody *)messageBody
@@ -212,8 +167,10 @@ NS_ASSUME_NONNULL_BEGIN
         
         [message anyInsertWithTransaction:transaction];
         [message updateWithMessageSticker:messageSticker transaction:transaction];
-        
+
         [self.messageSenderJobQueue addMessage:message.asPreparer transaction:transaction];
+
+        [thread donateSendMessageIntentWithTransaction:transaction];
     });
 }
 
@@ -268,7 +225,11 @@ NS_ASSUME_NONNULL_BEGIN
         }];
     });
 
-    return outgoingMessagePreparer.unpreparedMessage;
+    TSOutgoingMessage *message = outgoingMessagePreparer.unpreparedMessage;
+    if (message.hasRenderableContent) {
+        [thread donateSendMessageIntentWithTransaction:transaction];
+    }
+    return message;
 }
 
 + (nullable MessageSticker *)messageStickerForStickerDraft:(MessageStickerDraft *)stickerDraft
@@ -288,14 +249,39 @@ NS_ASSUME_NONNULL_BEGIN
 
 #pragma mark - Profile Whitelist
 
-+ (BOOL)addThreadToProfileWhitelistIfEmptyOrPendingRequestWithSneakyTransaction:(TSThread *)thread
++ (BOOL)addThreadToProfileWhitelistIfEmptyOrPendingRequestAndSetDefaultTimerWithSneakyTransaction:(TSThread *)thread
 {
     OWSAssertDebug(thread);
 
     __block BOOL hasPendingMessageRequest;
+    __block BOOL needsDefaultTimerSet;
+    __block DisappearingMessageToken *defaultTimerToken;
     [self.databaseStorage readWithBlock:^(SDSAnyReadTransaction *transaction) {
         hasPendingMessageRequest = [thread hasPendingMessageRequestWithTransaction:transaction.unwrapGrdbRead];
+
+        defaultTimerToken =
+            [OWSDisappearingMessagesConfiguration fetchOrBuildDefaultUniversalConfigurationWithTransaction:transaction]
+                .asToken;
+        needsDefaultTimerSet =
+            [GRDBThreadFinder shouldSetDefaultDisappearingMessageTimerWithThread:thread
+                                                                     transaction:transaction.unwrapGrdbRead];
     }];
+
+    if (needsDefaultTimerSet) {
+        DatabaseStorageWrite(self.databaseStorage, ^(SDSAnyWriteTransaction *transaction) {
+            OWSDisappearingMessagesConfiguration *configuration =
+                [OWSDisappearingMessagesConfiguration applyToken:defaultTimerToken
+                                                        toThread:thread
+                                                     transaction:transaction];
+
+            OWSDisappearingConfigurationUpdateInfoMessage *infoMessage =
+                [[OWSDisappearingConfigurationUpdateInfoMessage alloc] initWithThread:thread
+                                                                        configuration:configuration
+                                                                  createdByRemoteName:nil
+                                                               createdInExistingGroup:NO];
+            [infoMessage anyInsertWithTransaction:transaction];
+        });
+    }
 
     // If we're creating this thread or we have a pending message request,
     // any action we trigger should share our profile.
@@ -307,10 +293,29 @@ NS_ASSUME_NONNULL_BEGIN
     return NO;
 }
 
-+ (BOOL)addThreadToProfileWhitelistIfEmptyOrPendingRequest:(TSThread *)thread
-                                               transaction:(SDSAnyWriteTransaction *)transaction
++ (BOOL)addThreadToProfileWhitelistIfEmptyOrPendingRequestAndSetDefaultTimer:(TSThread *)thread
+                                                                 transaction:(SDSAnyWriteTransaction *)transaction
 {
     OWSAssertDebug(thread);
+
+    DisappearingMessageToken *defaultTimerToken =
+        [OWSDisappearingMessagesConfiguration fetchOrBuildDefaultUniversalConfigurationWithTransaction:transaction]
+            .asToken;
+    BOOL needsDefaultTimerSet =
+        [GRDBThreadFinder shouldSetDefaultDisappearingMessageTimerWithThread:thread
+                                                                 transaction:transaction.unwrapGrdbRead];
+
+    if (needsDefaultTimerSet) {
+        OWSDisappearingMessagesConfiguration *configuration =
+            [OWSDisappearingMessagesConfiguration applyToken:defaultTimerToken toThread:thread transaction:transaction];
+
+        OWSDisappearingConfigurationUpdateInfoMessage *infoMessage =
+            [[OWSDisappearingConfigurationUpdateInfoMessage alloc] initWithThread:thread
+                                                                    configuration:configuration
+                                                              createdByRemoteName:nil
+                                                           createdInExistingGroup:NO];
+        [infoMessage anyInsertWithTransaction:transaction];
+    }
 
     BOOL hasPendingMessageRequest = [thread hasPendingMessageRequestWithTransaction:transaction.unwrapGrdbRead];
     // If we're creating this thread or we have a pending message request,
@@ -330,14 +335,17 @@ NS_ASSUME_NONNULL_BEGIN
     OWSLogInfo(@"");
 
     DatabaseStorageWrite(self.databaseStorage, ^(SDSAnyWriteTransaction *transaction) {
-        [TSThread anyRemoveAllWithInstantationWithTransaction:transaction];
+        [TSThread anyEnumerateWithTransaction:transaction
+                                      batched:YES
+                                        block:^(TSThread *thread, BOOL *stop) {
+                                            [thread softDeleteThreadWithTransaction:transaction];
+                                        }];
         [TSInteraction anyRemoveAllWithInstantationWithTransaction:transaction];
         [TSAttachment anyRemoveAllWithInstantationWithTransaction:transaction];
-        [SignalRecipient anyRemoveAllWithInstantationWithTransaction:transaction];
-        
+
         // Deleting attachments above should be enough to remove any gallery items, but
         // we redunantly clean up *all* gallery items to be safe.
-        [AnyMediaGalleryFinder didRemoveAllContentWithTransaction:transaction];
+        [MediaGalleryManager didRemoveAllContentWithTransaction:transaction];
     });
     [TSAttachmentStream deleteAttachmentsFromDisk];
 }

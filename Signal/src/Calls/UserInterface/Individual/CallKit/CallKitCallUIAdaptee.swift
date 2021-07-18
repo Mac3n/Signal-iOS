@@ -1,5 +1,5 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 import Foundation
@@ -18,8 +18,6 @@ import SignalMessaging
 final class CallKitCallUIAdaptee: NSObject, CallUIAdaptee, CXProviderDelegate {
 
     private let callManager: CallKitCallManager
-    internal let notificationPresenter: NotificationPresenter
-    internal let contactsManager: OWSContactsManager
     private let showNamesOnCallScreen: Bool
     private let provider: CXProvider
     private let audioActivity: AudioActivity
@@ -88,14 +86,12 @@ final class CallKitCallUIAdaptee: NSObject, CallUIAdaptee, CXProviderDelegate {
         return providerConfiguration
     }
 
-    init(contactsManager: OWSContactsManager, notificationPresenter: NotificationPresenter, showNamesOnCallScreen: Bool, useSystemCallLog: Bool) {
+    init(showNamesOnCallScreen: Bool, useSystemCallLog: Bool) {
         AssertIsOnMainThread()
 
         Logger.debug("")
 
         self.callManager = CallKitCallManager(showNamesOnCallScreen: showNamesOnCallScreen)
-        self.contactsManager = contactsManager
-        self.notificationPresenter = notificationPresenter
 
         self.provider = type(of: self).sharedProvider(useSystemCallLog: useSystemCallLog)
 
@@ -107,12 +103,6 @@ final class CallKitCallUIAdaptee: NSObject, CallUIAdaptee, CXProviderDelegate {
         // We cannot assert singleton here, because this class gets rebuilt when the user changes relevant call settings
 
         self.provider.setDelegate(self, queue: nil)
-    }
-
-    // MARK: Dependencies
-
-    var audioSession: OWSAudioSession {
-        return Environment.shared.audioSession
     }
 
     // MARK: CallUIAdaptee
@@ -153,7 +143,7 @@ final class CallKitCallUIAdaptee: NSObject, CallUIAdaptee, CXProviderDelegate {
         let update = CXCallUpdate()
 
         if showNamesOnCallScreen {
-            update.localizedCallerName = self.contactsManager.displayName(for: call.individualCall.remoteAddress)
+            update.localizedCallerName = contactsManager.displayName(for: call.individualCall.remoteAddress)
             if let phoneNumber = call.individualCall.remoteAddress.phoneNumber {
                 update.remoteHandle = CXHandle(type: .phoneNumber, value: phoneNumber)
             }
@@ -381,7 +371,7 @@ final class CallKitCallUIAdaptee: NSObject, CallUIAdaptee, CXProviderDelegate {
         AssertIsOnMainThread()
 
         Logger.info("Received \(#function) CXSetMutedCallAction")
-        guard let call = callManager.callWithLocalId(action.callUUID) else {
+        guard nil != callManager.callWithLocalId(action.callUUID) else {
             Logger.info("Failing CXSetMutedCallAction for unknown (ended?) call: \(action.callUUID)")
             action.fail()
             return

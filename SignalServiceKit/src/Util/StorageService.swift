@@ -1,5 +1,5 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 import Foundation
@@ -32,7 +32,7 @@ public protocol StorageServiceManagerProtocol {
 
 // MARK: -
 
-public struct StorageService {
+public struct StorageService: Dependencies {
     public enum StorageError: OperationError {
         case assertion
         case retryableAssertion
@@ -88,7 +88,7 @@ public struct StorageService {
         }
 
         public func buildRecord() throws -> StorageServiceProtoManifestRecordKey {
-            var builder = StorageServiceProtoManifestRecordKey.builder(data: data, type: type)
+            let builder = StorageServiceProtoManifestRecordKey.builder(data: data, type: type)
             return try builder.build()
         }
 
@@ -357,10 +357,6 @@ public struct StorageService {
         return OWSSignalService.shared().urlSessionForStorageService()
     }
 
-    private static var signalServiceClient: SignalServiceClient {
-        return SignalServiceRestClient()
-    }
-
     // MARK: - Storage Requests
 
     private struct StorageResponse {
@@ -393,7 +389,7 @@ public struct StorageService {
     }
 
     private static func storageRequest(withMethod method: HTTPMethod, endpoint: String, body: Data? = nil) -> Promise<StorageResponse> {
-        return signalServiceClient.requestStorageAuth().map { username, password in
+        return serviceClient.requestStorageAuth().map { username, password in
             Auth(username: username, password: password)
         }.then(on: .global()) { (auth: Auth) -> Promise<OWSHTTPResponse> in
             if method == .get { assert(body == nil) }
@@ -443,13 +439,14 @@ public struct StorageService {
 
             return StorageResponse(status: status, data: responseData)
         }.recover(on: .global()) { (error: Error) -> Promise<StorageResponse> in
-            if IsNetworkConnectivityFailure(error) {
-                throw StorageError.networkError(statusCode: 0, underlyingError: error)
+            if let httpStatusCode = error.httpStatusCode,
+               httpStatusCode == 401 {
+                // Not registered.
+                Logger.warn("Error: \(error)")
             } else {
-                // This should never happen.
-                owsFailDebug("Error: \(error)")
-                throw StorageError.networkError(statusCode: 0, underlyingError: error)
+                owsFailDebugUnlessNetworkFailure(error)
             }
+            throw StorageError.networkError(statusCode: 0, underlyingError: error)
         }
     }
 }

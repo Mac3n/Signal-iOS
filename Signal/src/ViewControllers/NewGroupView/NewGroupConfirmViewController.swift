@@ -1,5 +1,5 @@
 //
-//  Copyright (c) 2020 Open Whisper Systems. All rights reserved.
+//  Copyright (c) 2021 Open Whisper Systems. All rights reserved.
 //
 
 import Foundation
@@ -7,7 +7,7 @@ import PromiseKit
 import SafariServices
 
 @objc
-public class NewGroupConfirmViewController: OWSViewController {
+public class NewGroupConfirmViewController: OWSTableViewController2 {
 
     private var newGroupState = NewGroupState()
 
@@ -25,20 +25,25 @@ public class NewGroupConfirmViewController: OWSViewController {
         return helper.nameTextField
     }
 
-    private let recipientTableView = OWSTableViewController()
+    private lazy var disappearingMessagesConfiguration = databaseStorage.read { transaction in
+        OWSDisappearingMessagesConfiguration.fetchOrBuildDefaultUniversalConfiguration(with: transaction)
+    }
 
     required init(newGroupState: NewGroupState) {
         self.newGroupState = newGroupState
 
         let groupId = newGroupState.groupSeed.possibleGroupId
-        let conversationColorName = newGroupState.groupSeed.possibleConversationColorName
-        self.helper = GroupAttributesEditorHelper(groupId: groupId,
-                                                  conversationColorName: conversationColorName.rawValue,
-                                                  groupNameOriginal: newGroupState.groupName,
-                                                  avatarOriginalData: newGroupState.avatarData,
-                                                  iconViewSize: 64)
+        self.helper = GroupAttributesEditorHelper(
+            groupId: groupId,
+            groupNameOriginal: newGroupState.groupName,
+            groupDescriptionOriginal: nil,
+            avatarOriginalData: newGroupState.avatarData,
+            iconViewSize: 64
+        )
 
         super.init()
+
+        self.shouldAvoidKeyboard = true
     }
 
     // MARK: - View Lifecycle
@@ -49,8 +54,6 @@ public class NewGroupConfirmViewController: OWSViewController {
 
         title = NSLocalizedString("NEW_GROUP_NAME_GROUP_VIEW_TITLE",
                                   comment: "The title for the 'name new group' view.")
-
-        view.backgroundColor = Theme.backgroundColor
 
         navigationItem.rightBarButtonItem = UIBarButtonItem(title: NSLocalizedString("NEW_GROUP_CREATE_BUTTON",
                                                                                      comment: "The title for the 'create group' button."),
@@ -64,33 +67,68 @@ public class NewGroupConfirmViewController: OWSViewController {
         helper.delegate = self
         helper.buildContents(avatarViewHelperDelegate: self)
 
-        helper.avatarWrapper.setContentHuggingVerticalHigh()
-        helper.nameTextField.setContentHuggingHorizontalLow()
-        let firstSection = UIStackView(arrangedSubviews: [
-            helper.avatarWrapper,
-            helper.nameTextField
-        ])
-        firstSection.axis = .horizontal
-        firstSection.alignment = .center
-        firstSection.spacing = 12
-        firstSection.isLayoutMarginsRelativeArrangement = true
-        firstSection.preservesSuperviewLayoutMargins = true
-        view.addSubview(firstSection)
-        firstSection.autoPinWidthToSuperview()
-        firstSection.autoPin(toTopLayoutGuideOf: self, withInset: 8)
+        tableView.register(ContactTableViewCell.self, forCellReuseIdentifier: ContactTableViewCell.reuseIdentifier)
 
-        var lastSection: UIView = firstSection
+        updateTableContents()
+    }
 
+    private var lastViewSize = CGSize.zero
+    public override func viewWillLayoutSubviews() {
+        super.viewWillLayoutSubviews()
+
+        guard view.frame.size != lastViewSize else { return }
+        lastViewSize = view.frame.size
+        updateTableContents()
+    }
+
+    private var membersDoNotSupportGroupsV2: [PickedRecipient] {
+        return databaseStorage.read { transaction in
+            self.recipientSet.orderedMembers.filter {
+                guard let address = $0.address else {
+                    return false
+                }
+                return !GroupManager.doesUserSupportGroupsV2(address: address, transaction: transaction)
+            }
+        }
+    }
+
+    @objc
+    func didTapLegacyGroupView() {
+        showLegacyGroupAlert()
+    }
+
+    @objc
+    func showLegacyGroupAlert() {
         let membersDoNotSupportGroupsV2 = self.membersDoNotSupportGroupsV2
-        if membersDoNotSupportGroupsV2.count > 0 {
-            let legacyGroupSection = UIView()
-            legacyGroupSection.backgroundColor = Theme.secondaryBackgroundColor
-            legacyGroupSection.preservesSuperviewLayoutMargins = true
-            view.addSubview(legacyGroupSection)
-            legacyGroupSection.autoPinWidthToSuperview()
-            legacyGroupSection.autoPinEdge(.top, to: .bottom, of: firstSection, withOffset: 16)
-            lastSection = legacyGroupSection
+        guard !membersDoNotSupportGroupsV2.isEmpty else {
+            return
+        }
+        NewLegacyGroupView(v1Members: membersDoNotSupportGroupsV2).present(fromViewController: self)
+    }
 
+    public override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+
+        nameTextField.becomeFirstResponder()
+    }
+
+    // MARK: -
+
+    private func updateTableContents() {
+        let contents = OWSTableContents()
+
+        let nameAndAvatarSection = OWSTableSection()
+
+        let members = databaseStorage.read { transaction in
+            BaseGroupMemberViewController.orderedMembers(recipientSet: self.recipientSet,
+                                                         shouldSort: true,
+                                                         transaction: transaction)
+        }.compactMap { $0.address }
+
+        if members.isEmpty {
+            nameAndAvatarSection.footerTitle = NSLocalizedString("GROUP_MEMBERS_NO_OTHER_MEMBERS",
+                                                    comment: "Label indicating that a new group has no other members.")
+        } else if membersDoNotSupportGroupsV2.count > 0 {
             let legacyGroupText: String
             let learnMoreText = CommonStrings.learnMore
             if membersDoNotSupportGroupsV2.count > 1 {
@@ -115,113 +153,129 @@ public class NewGroupConfirmViewController: OWSViewController {
                 }
                 legacyGroupText = String(format: legacyGroupFormat, learnMoreText)
             }
+
             let attributedString = NSMutableAttributedString(string: legacyGroupText)
-            attributedString.setAttributes([
-                .foregroundColor: Theme.accentBlueColor
-                ],
-                                           forSubstring: learnMoreText)
+            attributedString.setAttributes(
+                [.foregroundColor: Theme.primaryTextColor],
+                forSubstring: learnMoreText
+            )
 
             let legacyGroupLabel = UILabel()
             legacyGroupLabel.textColor = Theme.secondaryTextAndIconColor
-            legacyGroupLabel.font = .ows_dynamicTypeFootnote
+            legacyGroupLabel.font = .ows_dynamicTypeCaption1Clamped
             legacyGroupLabel.attributedText = attributedString
             legacyGroupLabel.numberOfLines = 0
             legacyGroupLabel.lineBreakMode = .byWordWrapping
-            legacyGroupSection.addSubview(legacyGroupLabel)
+
+            let containerView = UIView()
+            containerView.layoutMargins = cellOuterInsetsWithMargin(
+                top: 12,
+                left: OWSTableViewController2.cellHInnerMargin,
+                bottom: 0,
+                right: OWSTableViewController2.cellHInnerMargin
+            )
+            containerView.addSubview(legacyGroupLabel)
             legacyGroupLabel.autoPinEdgesToSuperviewMargins()
+            legacyGroupLabel.isUserInteractionEnabled = true
+            legacyGroupLabel.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(didTapLegacyGroupView)))
 
-            legacyGroupSection.isUserInteractionEnabled = true
-            legacyGroupSection.addGestureRecognizer(UITapGestureRecognizer(target: self,
-                                                                           action: #selector(didTapLegacyGroupView)))
+            nameAndAvatarSection.customFooterView = containerView
         }
 
-        recipientTableView.customSectionHeaderFooterBackgroundColor = Theme.backgroundColor
-        addChild(recipientTableView)
-        view.addSubview(recipientTableView.view)
+        nameAndAvatarSection.add(.init(
+            customCellBlock: { [weak self] in
+                let cell = OWSTableItem.newCell()
+                cell.selectionStyle = .none
+                guard let self = self else { return cell }
 
-        recipientTableView.view.autoPinEdge(toSuperviewSafeArea: .leading)
-        recipientTableView.view.autoPinEdge(toSuperviewSafeArea: .trailing)
-        recipientTableView.view.autoPinEdge(.top, to: .bottom, of: lastSection)
-        autoPinView(toBottomOfViewControllerOrKeyboard: recipientTableView.view, avoidNotch: false)
+                self.helper.avatarWrapper.setContentHuggingVerticalHigh()
+                self.helper.nameTextField.setContentHuggingHorizontalLow()
+                let firstSection = UIStackView(arrangedSubviews: [
+                    self.helper.avatarWrapper,
+                    self.helper.nameTextField
+                ])
+                firstSection.axis = .horizontal
+                firstSection.alignment = .center
+                firstSection.spacing = ContactCellView.avatarTextHSpacing
 
-        updateTableContents()
-    }
+                cell.contentView.addSubview(firstSection)
+                firstSection.autoPinEdgesToSuperviewMargins()
 
-    private var membersDoNotSupportGroupsV2: [PickedRecipient] {
-        return databaseStorage.read { transaction in
-            self.recipientSet.orderedMembers.filter {
-                guard let address = $0.address else {
-                    return false
+                return cell
+            },
+            actionBlock: {}
+        ))
+        contents.addSection(nameAndAvatarSection)
+
+        let disappearingMessagesSection = OWSTableSection()
+        disappearingMessagesSection.add(.init(
+            customCellBlock: { [weak self] in
+                guard let self = self else { return UITableViewCell() }
+                let cell = OWSTableItem.buildIconNameCell(
+                    icon: self.disappearingMessagesConfiguration.isEnabled
+                        ? .settingsTimer
+                        : .settingsTimerDisabled,
+                    itemName: NSLocalizedString(
+                        "DISAPPEARING_MESSAGES",
+                        comment: "table cell label in conversation settings"
+                    ),
+                    accessoryText: self.disappearingMessagesConfiguration.isEnabled
+                        ? NSString.formatDurationSeconds(self.disappearingMessagesConfiguration.durationSeconds, useShortFormat: true)
+                        : CommonStrings.switchOff,
+                    accessoryType: .disclosureIndicator,
+                    accessoryImage: nil,
+                    accessibilityIdentifier: UIView.accessibilityIdentifier(in: self, name: "disappearing_messages")
+                )
+                return cell
+            }, actionBlock: { [weak self] in
+                guard let self = self else { return }
+                let vc = DisappearingMessagesTimerSettingsViewController(configuration: self.disappearingMessagesConfiguration) { configuration in
+                    self.disappearingMessagesConfiguration = configuration
+                    self.updateTableContents()
                 }
-                return !GroupManager.doesUserSupportGroupsV2(address: address, transaction: transaction)
+                self.presentFormSheet(OWSNavigationController(rootViewController: vc), animated: true)
             }
-        }
-    }
-
-    @objc
-    func didTapLegacyGroupView(sender: UIGestureRecognizer) {
-        showLegacyGroupAlert()
-    }
-
-    @objc
-    func showLegacyGroupAlert() {
-        let membersDoNotSupportGroupsV2 = self.membersDoNotSupportGroupsV2
-        guard !membersDoNotSupportGroupsV2.isEmpty else {
-            return
-        }
-        NewLegacyGroupView(v1Members: membersDoNotSupportGroupsV2).present(fromViewController: self)
-    }
-
-    public override func viewDidAppear(_ animated: Bool) {
-        super.viewDidAppear(animated)
-
-        nameTextField.becomeFirstResponder()
-    }
-
-    // MARK: -
-
-    private func updateTableContents() {
-        let section = OWSTableSection()
-        section.headerTitle = NSLocalizedString("GROUP_MEMBERS_SECTION_TITLE_MEMBERS",
-                                                comment: "Title for the 'members' section of the 'group members' view.")
-
-        let members = databaseStorage.uiRead { transaction in
-            BaseGroupMemberViewController.orderedMembers(recipientSet: self.recipientSet,
-                                                         shouldSort: true,
-                                                         transaction: transaction)
-        }.compactMap { $0.address }
+        ))
+        contents.addSection(disappearingMessagesSection)
 
         if members.count > 0 {
+            let section = OWSTableSection()
+            section.headerTitle = NSLocalizedString("GROUP_MEMBERS_SECTION_TITLE_MEMBERS",
+                                                    comment: "Title for the 'members' section of the 'group members' view.")
+
             let membersDoNotSupportGroupsV2 = self.membersDoNotSupportGroupsV2.map { $0.address }
 
             for address in members {
                 section.add(OWSTableItem(
-                    customCellBlock: {
-                        let cell = ContactTableViewCell()
+                                dequeueCellBlock: { tableView in
+                        guard let cell = tableView.dequeueReusableCell(withIdentifier: ContactTableViewCell.reuseIdentifier) as? ContactTableViewCell else {
+                            owsFailDebug("Missing cell.")
+                            return UITableViewCell()
+                        }
 
                         cell.selectionStyle = .none
 
-                        if GroupManager.areMigrationsBlocking,
-                           membersDoNotSupportGroupsV2.contains(address) {
-                            let warning = NSLocalizedString("NEW_GROUP_CREATION_MEMBER_DOES_NOT_SUPPORT_NEW_GROUPS",
-                                                            comment: "Indicates that a group member does not support New Groups.")
-                            cell.setAttributedSubtitle(warning.attributedString())
+                        Self.databaseStorage.read { transaction in
+                            let configuration = ContactCellConfiguration.build(address: address,
+                                                                               localUserDisplayMode: .asUser,
+                                                                               transaction: transaction)
+
+                            if GroupManager.areMigrationsBlocking,
+                               membersDoNotSupportGroupsV2.contains(address) {
+                                let warning = NSLocalizedString("NEW_GROUP_CREATION_MEMBER_DOES_NOT_SUPPORT_NEW_GROUPS",
+                                                                comment: "Indicates that a group member does not support New Groups.")
+                                configuration.attributedSubtitle = warning.attributedString()
+                            }
+
+                            cell.configure(configuration: configuration, transaction: transaction)
                         }
-
-                        cell.configure(withRecipientAddress: address)
-
                         return cell
                 }))
             }
-        } else {
-            section.add(OWSTableItem.softCenterLabel(withText: NSLocalizedString("GROUP_MEMBERS_NO_OTHER_MEMBERS",
-                                                                                 comment: "Label indicating that a group has no other members."),
-                                                     customRowHeight: UITableView.automaticDimension))
+            contents.addSection(section)
         }
 
-        let contents = OWSTableContents()
-        contents.addSection(section)
-        recipientTableView.contents = contents
+        self.contents = contents
     }
 
     // MARK: - Actions
@@ -251,6 +305,7 @@ public class NewGroupConfirmViewController: OWSViewController {
         let memberSet = Set([localAddress] + recipientSet.orderedMembers.compactMap { $0.address })
         let members = Array(memberSet)
         let newGroupSeed = groupSeed
+        let disappearingMessageToken = disappearingMessagesConfiguration.asToken
 
         // GroupsV2 TODO: Should we allow cancel here?
         ModalActivityIndicatorViewController.present(fromViewController: self,
@@ -260,6 +315,7 @@ public class NewGroupConfirmViewController: OWSViewController {
                                                                                              groupId: nil,
                                                                                              name: groupName,
                                                                                              avatarData: avatarData,
+                                                                                             disappearingMessageToken: disappearingMessageToken,
                                                                                              newGroupSeed: newGroupSeed,
                                                                                              shouldSendMessage: true)
                                                         }.done { groupThread in
@@ -308,9 +364,11 @@ public class NewGroupConfirmViewController: OWSViewController {
                          modalActivityIndicator: ModalActivityIndicatorViewController) {
         AssertIsOnMainThread()
 
+        let hasAnyRemoteMembers = groupThread.groupModel.groupMembership.allMembersOfAnyKind.count > 1
+
         let navigateToNewGroup = { (completion: (() -> Void)?) in
             SignalApp.shared().presentConversation(for: groupThread,
-                                                   action: .compose,
+                                                   action: hasAnyRemoteMembers ? .none : .newGroupActionSheet,
                                                    animated: false)
             self.presentingViewController?.dismiss(animated: true, completion: completion)
         }
@@ -408,6 +466,8 @@ extension NewGroupConfirmViewController: GroupAttributesEditorHelperDelegate {
         newGroupState.groupName = helper.groupNameCurrent
         newGroupState.avatarData = helper.avatarCurrent?.imageData
     }
+
+    func groupAttributesEditorSelectionDidChange() {}
 }
 
 // MARK: -
@@ -416,7 +476,7 @@ class NewLegacyGroupView: UIView {
 
     private let v1Members: [PickedRecipient]
 
-    private let tableViewController = OWSTableViewController()
+    private let tableViewController = OWSTableViewController2()
 
     weak var actionSheetController: ActionSheetController?
 
@@ -424,6 +484,8 @@ class NewLegacyGroupView: UIView {
         self.v1Members = v1Members
 
         super.init(frame: .zero)
+
+        tableViewController.tableView.register(ContactTableViewCell.self, forCellReuseIdentifier: ContactTableViewCell.reuseIdentifier)
     }
 
     required init(coder: NSCoder) {
@@ -468,7 +530,7 @@ class NewLegacyGroupView: UIView {
         }
         headerLabel.textAlignment = .center
 
-        let members = databaseStorage.uiRead { transaction in
+        let members = databaseStorage.read { transaction in
             BaseGroupMemberViewController.orderedMembers(recipientSet: OrderedSet(self.v1Members),
                                                          shouldSort: true,
                                                          transaction: transaction)
@@ -477,10 +539,16 @@ class NewLegacyGroupView: UIView {
         let section = OWSTableSection()
         for address in members {
             section.add(OWSTableItem(
-                customCellBlock: {
-                    let cell = ContactTableViewCell()
+                            dequeueCellBlock: { tableView in
+
+                    guard let cell = tableView.dequeueReusableCell(withIdentifier: ContactTableViewCell.reuseIdentifier) as? ContactTableViewCell else {
+                        owsFailDebug("Missing cell.")
+                        return UITableViewCell()
+                    }
+
                     cell.selectionStyle = .none
-                    cell.configure(withRecipientAddress: address)
+                    cell.configureWithSneakyTransaction(address: address,
+                                                        localUserDisplayMode: .asUser)
                     return cell
             }))
         }
@@ -510,7 +578,7 @@ class NewLegacyGroupView: UIView {
         stackView.alignment = .fill
         stackView.layoutMargins = UIEdgeInsets(top: 20, leading: 0, bottom: 38, trailing: 0)
         stackView.isLayoutMarginsRelativeArrangement = true
-        stackView.addBackgroundView(withBackgroundColor: Theme.backgroundColor)
+        stackView.addBackgroundView(withBackgroundColor: tableViewController.tableBackgroundColor)
 
         layoutMargins = .zero
         addSubview(stackView)
