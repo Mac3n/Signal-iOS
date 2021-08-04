@@ -1,5 +1,3 @@
-• Abbiamo migliorato l'app con nuove animazioni durante l'invio e la ricezione di messaggi, la selezione dei messaggi nella visualizzazione della chat e la risposta ai messaggi.
-• La durata della batteria è preziosa, quindi abbiamo apportato diverse modifiche al modo in cui le notifiche vengono gestite nell'app che riduce significativamente l'utilizzo della batteria. Segnalaci eventuali problemi riscontrati con l'affidabilità delle notifiche. 
-• Hai ricevuto un messaggio indesiderato? Ora puoi segnalarlo come spam quando clicchi blocca.
+• Dai un nuovo look al tuo profilo e alle foto di gruppo. Sia che tu voglia caricare una "immagine che vale più di mille parole", digitare semplicemente alcune lettere o selezionare una delle nostre nuove e colorate impostazioni predefinite, è più facile che mai creare la foto perfetta.
 
 Interessato ad aiutare a migliorare Signal? Stiamo assumendo. Visita https://signal.org/workworkwork per saperne di più.

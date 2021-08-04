@@ -1,5 +1,3 @@
-• We’ve spruced up with the app with new animations when sending and receiving messages, selecting messages in the chat view, and replying to messages.
-• Battery life is precious, so we’ve made several changes to the way notifications are handled in the app which reduces battery usage significantly. Please report any issues you see with notification reliability. 
-• Receive an unwanted message? You can now report it as spam when you tap block.
+• Profilinize ve grup fotoğraflarınıza bir yenilik getirin. “Bin kelimeye bedel bir resim” yüklemek, sadece birkaç harf yazmak veya renkli yeni varsayılanlarımızdan birini seçmek istiyorsanız, mükemmel fotoğrafı oluşturmak her zamankinden daha kolay.
 
 Interested in helping improve Signal? We're hiring. Visit https://signal.org/workworkwork to learn more.

@@ -181,6 +181,9 @@ public class FeatureFlags: BaseFlags {
     public static let chatColors = true
 
     @objc
+    public static let contextMenus = false
+
+    @objc
     public static let newLinkDeviceScheme = build.includes(.dev)
 
     public static func buildFlagMap() -> [String: Any] {
@@ -499,6 +502,9 @@ public class DebugFlags: BaseFlags {
     public static let callingUseTestSFU = TestableFlag(false,
                                                        title: LocalizationNotNeeded("Calling: Use Test SFU"),
                                                        details: LocalizationNotNeeded("Group calls will connect to sfu.test.voip.signal.org."))
+
+    @objc
+    public static let forceAnnouncementOnlyGroups = build.includes(.qa)
 
     public static func buildFlagMap() -> [String: Any] {
         BaseFlags.buildFlagMap(for: DebugFlags.self) { (key: String) -> Any? in

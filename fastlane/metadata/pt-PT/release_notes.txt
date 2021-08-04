@@ -1,5 +1,3 @@
-• Aprimoramos a aplicação com novas animações ao enviar e receber mensagens, selecionar mensagens na visualização de conversas e responder às mensagens. 
-• A vida útil da bateria é preciosa, por isso fizemos várias alterações na forma como as notificações são tratadas na aplicação, o que reduz significativamente a utilização da bateria. Por favor, relate quaisquer problemas que você encontrar com a confiabilidade da notificação
-• Recebeu uma mensagem indesejada? Agora pode reportá-la como spam e tocar para a bloquear.
+• Renove o seu perfil e fotografias de grupo. Se você deseja fazer o upload de uma "imagem que vale mais que mil palavras", basta escrever algumas letras ou selecionar um dos nossos novos padrões coloridos, é mais fácil do que nunca criar a fotografia perfeita.
 
 Está interessado em melhorar o Signal? Estamos a contratar. Visite https://signal.org/workworkwork para saber mais.

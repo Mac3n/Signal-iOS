@@ -194,6 +194,11 @@ public class RemoteConfig: BaseFlags {
     }
 
     @objc
+    public static var announcementOnlyGroups: Bool {
+        DebugFlags.forceAnnouncementOnlyGroups || isEnabled(.announcementOnlyGroups)
+    }
+
+    @objc
     public static var notificationServiceExtension: Bool {
         // The CallKit APIs for the NSE are only available from iOS 14.5 and on.
         guard #available(iOS 14.5, *) else { return false }
@@ -390,6 +395,7 @@ private struct Flags {
         case paymentsResetKillSwitch
         case giphySendAsMP4
         case viewedReceiptSending
+        case announcementOnlyGroups
         case notificationServiceExtension
     }
 

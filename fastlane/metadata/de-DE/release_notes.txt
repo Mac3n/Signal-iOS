@@ -1,5 +1,3 @@
-• Wir haben die App mit neuen Animationen beim Senden und Empfangen von Nachrichten, beim Auswählen von Nachrichten in der Unterhaltungsansicht und beim Beantworten von Nachrichten aufpoliert.
-• Die Akkulaufzeit ist kostbar, daher haben wir mehrere Änderungen an der Handhabung von Mitteilungen in der App vorgenommen, die den Akkuverbrauch erheblich reduzieren. Bitte melde alle Probleme, die du mit der Zuverlässigkeit der Mitteilungen feststellst.
-Erhältst du eine unerwünschte Nachricht? Diese kann jetzt als Spam gemeldet werden, wenn du auf Blockieren tippst.
+• Gib deinem Profil und Gruppenfotos ein Makeover. Egal, ob du ein „Bild sagt mehr als tausend Worte“ hochlädst, nur ein paar Buchstaben eingibst oder einen unserer farbenfrohen neuen Standardeinstellungen auswählen möchtest, es ist einfacher denn je, das perfekte Foto zu erstellen.
 
-Möchtest du zur Verbesserung von Signal beitragen? Wir stellen ein. Besuche https://signal.org/workworkwork um mehr zu erfahren.
+Möchtest du zur Verbesserung von Signal beitragen? Wir stellen ein. Besuche https://signal.org/workworkwork, um mehr zu erfahren.

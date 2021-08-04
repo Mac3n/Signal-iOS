@@ -3707,6 +3707,7 @@ typedef OWSContact * (^OWSContactBlock)(SDSAnyWriteTransaction *transaction);
                           [[SignalServiceAddress alloc] initWithPhoneNumber:phoneNumber.toE164];
                       TSContactThread *contactThread =
                           [TSContactThread getOrCreateThreadWithContactAddress:address transaction:transaction];
+                      [self.profileManager addThreadToProfileWhitelist:contactThread transaction:transaction];
                       [self createFakeMessagesInBatches:messageCount
                                                  thread:contactThread
                                      messageContentType:MessageContentTypeLongText
@@ -3975,10 +3976,10 @@ typedef OWSContact * (^OWSContactBlock)(SDSAnyWriteTransaction *transaction);
     [envelopeBuilder setSourceUuid:source.uuidString];
     [envelopeBuilder setSourceDevice:sourceDevice];
     envelopeBuilder.content = content;
-    NSError *error;
-    NSData *_Nullable envelopeData = [envelopeBuilder buildSerializedDataAndReturnError:&error];
-    if (error || !envelopeData) {
-        OWSFailDebug(@"Could not serialize envelope: %@.", error);
+    NSError *envelopeError;
+    NSData *_Nullable envelopeData = [envelopeBuilder buildSerializedDataAndReturnError:&envelopeError];
+    if (envelopeError || !envelopeData) {
+        OWSFailDebug(@"Could not serialize envelope: %@.", envelopeError);
         return;
     }
 
@@ -3986,8 +3987,10 @@ typedef OWSContact * (^OWSContactBlock)(SDSAnyWriteTransaction *transaction);
                                             plaintextData:plaintextData
                                   serverDeliveryTimestamp:0
                                           wasReceivedByUD:NO
-                                               completion:^(NSError *error) {
-
+                                               completion:^(NSError *_Nullable processingError) {
+                                                   if (processingError != nil) {
+                                                       OWSFailDebug(@"Error: %@", processingError);
+                                                   }
                                                }];
 }
 

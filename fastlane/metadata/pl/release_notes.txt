@@ -1,5 +1,3 @@
-• Ulepszyliśmy wygląd aplikacji, dzięki nowym animacjom przy wysyłaniu i otrzymywaniu wiadomości, wybieraniu wiadomości na ekranie rozmowy i odpowiadaniu na nie.
-• Pojemność baterii jest cenna, dlatego dokonaliśmy kilku zmian w aplikacji, w sposobie obsługi powiadomień, co znacząco zmniejsza zużycie baterii. Prosimy o zgłaszania wszelkich problemów z niezawodnością powiadomień. 
-• Otrzymujesz niechciane wiadomości? Teraz możesz zgłosić je, jako spam, stukając zablokuj.
+• Zafunduj całkowitą zmianę wyglądu zdjęciom swojego profilu i grup. Czy chcesz wrzucić "zdjęcie warte tysiąc słów", czy wpisać kilka liter albo wybrać jeden z naszych, kolorowych, obrazów domyślnych, teraz stworzenie idealnego zdjęcia profilowego jest prostsze, niż kiedykolwiek.
 
 Interested in helping improve Signal? We're hiring. Visit https://signal.org/workworkwork to learn more.

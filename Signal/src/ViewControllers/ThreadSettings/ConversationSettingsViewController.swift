@@ -104,32 +104,32 @@ class ConversationSettingsViewController: OWSTableViewController2 {
     // MARK: - Accessors
 
     var isBlockedByMigration: Bool {
-        return groupViewHelper.isBlockedByMigration
+        groupViewHelper.isBlockedByMigration
     }
 
     var canEditConversationAttributes: Bool {
-        return groupViewHelper.canEditConversationAttributes
+        groupViewHelper.canEditConversationAttributes
     }
 
     var canEditConversationMembership: Bool {
-        return groupViewHelper.canEditConversationMembership
+        groupViewHelper.canEditConversationMembership
     }
 
     // Can local user edit group access.
-    var canEditConversationAccess: Bool {
-        return groupViewHelper.canEditConversationAccess
+    var canEditPermissions: Bool {
+        groupViewHelper.canEditPermissions
     }
 
     var isLocalUserFullMember: Bool {
-        return groupViewHelper.isLocalUserFullMember
+        groupViewHelper.isLocalUserFullMember
     }
 
     var isLocalUserFullOrInvitedMember: Bool {
-        return groupViewHelper.isLocalUserFullOrInvitedMember
+        groupViewHelper.isLocalUserFullOrInvitedMember
     }
 
     var isGroupThread: Bool {
-        return thread.isGroupThread
+        thread.isGroupThread
     }
 
     // MARK: - View Lifecycle
@@ -338,10 +338,7 @@ class ConversationSettingsViewController: OWSTableViewController2 {
     // MARK: - Actions
 
     func tappedAvatar() {
-        guard avatarView != nil, !thread.isGroupThread || (thread as? TSGroupThread)?.groupModel.groupAvatarData != nil else {
-            return // Not a valid avatar
-        }
-
+        guard avatarView != nil else { return }
         presentAvatarViewController()
     }
 
@@ -494,7 +491,7 @@ class ConversationSettingsViewController: OWSTableViewController2 {
     func presentAvatarViewController() {
         guard let avatarView = avatarView, avatarView.image != nil else { return }
         guard let vc = databaseStorage.read(block: { readTx in
-            AvatarViewController(thread: self.thread, readTx: readTx)
+            AvatarViewController(thread: self.thread, renderLocalUserAsNoteToSelf: true, readTx: readTx)
         }) else {
             return
         }
@@ -650,6 +647,10 @@ class ConversationSettingsViewController: OWSTableViewController2 {
         let isCurrentlyBlocked = blockingManager.isThreadBlocked(thread)
         if isCurrentlyBlocked {
             owsFailDebug("Already blocked.")
+            return
+        }
+        guard canLocalUserLeaveGroupWithoutChoosingNewAdmin else {
+            showReplaceAdminAlert()
             return
         }
         BlockListUIUtils.showBlockThreadActionSheet(thread, from: self) { [weak self] _ in
@@ -1006,7 +1007,7 @@ extension ConversationSettingsViewController: MediaPresentationContextProvider {
 
         let presentationFrame = coordinateSpace.convert(mediaView.frame, from: mediaSuperview)
 
-        return MediaPresentationContext(mediaView: mediaView, presentationFrame: presentationFrame, cornerRadius: 0)
+        return MediaPresentationContext(mediaView: mediaView, presentationFrame: presentationFrame, cornerRadius: mediaView.layer.cornerRadius)
     }
 
     func snapshotOverlayView(in coordinateSpace: UICoordinateSpace) -> (UIView, CGRect)? {
